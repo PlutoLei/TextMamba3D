@@ -112,3 +112,30 @@ class TestFusion:
 
         # Output should match image feature shape
         assert out.shape == img_feat.shape
+
+
+class TestDecoder3D:
+    def test_decoder_output_shape(self):
+        """Test 3D Mamba decoder."""
+        from models.decoder_3d import MambaDecoder3D
+
+        decoder = MambaDecoder3D(
+            img_size=(96, 96, 96),
+            patch_size=(4, 4, 4),
+            out_channels=4,
+            embed_dim=96,
+            depths=[2, 2, 2, 2],
+        )
+
+        # Simulated encoder features (4 stages)
+        features = [
+            torch.randn(2, 24*24*24, 96),    # Stage 1
+            torch.randn(2, 12*12*12, 192),   # Stage 2
+            torch.randn(2, 6*6*6, 384),      # Stage 3
+            torch.randn(2, 3*3*3, 768),      # Stage 4 (bottleneck)
+        ]
+
+        out = decoder(features)
+
+        # Output should be [B, out_channels, D, H, W]
+        assert out.shape == (2, 4, 96, 96, 96)
