@@ -3,6 +3,40 @@ import torch
 import pytest
 
 
+class TestTextEncoder:
+    def test_text_encoder_output_shape(self):
+        """Test text Mamba encoder."""
+        from models.text_encoder import TextMambaEncoder
+
+        encoder = TextMambaEncoder(
+            vocab_size=30522,
+            embed_dim=256,
+            max_len=128,
+            depth=2,
+        )
+        # Simulated token ids
+        input_ids = torch.randint(0, 30522, (2, 64))
+        out = encoder(input_ids)
+
+        assert out.shape == (2, 64, 256)
+
+    def test_text_encoder_global_feature(self):
+        """Test global feature extraction."""
+        from models.text_encoder import TextMambaEncoder
+
+        encoder = TextMambaEncoder(
+            vocab_size=30522,
+            embed_dim=256,
+            max_len=128,
+            depth=2,
+        )
+        input_ids = torch.randint(0, 30522, (2, 64))
+        out = encoder(input_ids)
+        global_feat = encoder.get_global_feature(out)
+
+        assert global_feat.shape == (2, 256)
+
+
 class TestMambaBlock:
     def test_mamba_block_output_shape(self):
         """Test MambaBlock maintains input shape."""
