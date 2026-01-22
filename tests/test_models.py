@@ -91,3 +91,24 @@ class TestEncoder3D:
         # Should return multi-scale features
         assert isinstance(features, list)
         assert len(features) == 2
+
+
+class TestFusion:
+    def test_mamba_fusion_output_shape(self):
+        """Test Mamba fusion module."""
+        from models.fusion import MambaFusion
+
+        fusion = MambaFusion(
+            img_dim=192,
+            text_dim=256,
+            hidden_dim=192,
+            depth=2,
+        )
+
+        img_feat = torch.randn(2, 1000, 192)   # [B, N, D_img]
+        text_feat = torch.randn(2, 64, 256)    # [B, M, D_text]
+
+        out = fusion(img_feat, text_feat)
+
+        # Output should match image feature shape
+        assert out.shape == img_feat.shape
