@@ -21,3 +21,39 @@ class TestMambaBlock:
         x = torch.randn(2, 1000, 96)
         out = layer(x)
         assert out.shape == x.shape
+
+
+class TestEncoder3D:
+    def test_patch_embed_3d_output_shape(self):
+        """Test 3D patch embedding."""
+        from models.encoder_3d import PatchEmbed3D
+
+        embed = PatchEmbed3D(
+            img_size=(96, 96, 96),
+            patch_size=(4, 4, 4),
+            in_channels=4,
+            embed_dim=96,
+        )
+        x = torch.randn(2, 4, 96, 96, 96)  # [B, C, D, H, W]
+        out = embed(x)
+        # Expected: [B, (96/4)^3, 96] = [B, 13824, 96]
+        expected_seq_len = (96 // 4) ** 3
+        assert out.shape == (2, expected_seq_len, 96)
+
+    def test_encoder_3d_output_shape(self):
+        """Test full 3D Mamba encoder."""
+        from models.encoder_3d import MambaEncoder3D
+
+        encoder = MambaEncoder3D(
+            img_size=(96, 96, 96),
+            in_channels=4,
+            embed_dim=96,
+            depths=[2, 2],
+            patch_size=(4, 4, 4),
+        )
+        x = torch.randn(2, 4, 96, 96, 96)
+        features = encoder(x)
+
+        # Should return multi-scale features
+        assert isinstance(features, list)
+        assert len(features) == 2
