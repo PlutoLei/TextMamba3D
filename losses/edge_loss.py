@@ -1,0 +1,45 @@
+# losses/edge_loss.py
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class EdgeLoss(nn.Module):
+    """Edge-enhanced loss for sharper boundaries."""
+
+    def __init__(self, edge_weight: float = 2.0):
+        super().__init__()
+        self.edge_weight = edge_weight
+        self.register_buffer('sobel_x', self._create_sobel_kernel(0))
+        self.register_buffer('sobel_y', self._create_sobel_kernel(1))
+        self.register_buffer('sobel_z', self._create_sobel_kernel(2))
+
+    def _create_sobel_kernel(self, axis: int) -> torch.Tensor:
+        kernel = torch.zeros(1, 1, 3, 3, 3)
+        if axis == 0:
+            kernel[0, 0, 0, :, :] = torch.tensor([[-1, -2, -1], [-2, -4, -2], [-1, -2, -1]])
+            kernel[0, 0, 2, :, :] = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]])
+        elif axis == 1:
+            kernel[0, 0, :, 0, :] = torch.tensor([[-1, -2, -1], [-2, -4, -2], [-1, -2, -1]])
+            kernel[0, 0, :, 2, :] = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]])
+        else:
+            kernel[0, 0, :, :, 0] = torch.tensor([[-1, -2, -1], [-2, -4, -2], [-1, -2, -1]])
+            kernel[0, 0, :, :, 2] = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]])
+        return kernel / 16.0
+
+    def get_edge_mask(self, target: torch.Tensor) -> torch.Tensor:
+        target_float = target.float().unsqueeze(1)
+        gx = F.conv3d(target_float, self.sobel_x, padding=1)
+        gy = F.conv3d(target_float, self.sobel_y, padding=1)
+        gz = F.conv3d(target_float, self.sobel_z, padding=1)
+        edge = torch.sqrt(gx**2 + gy**2 + gz**2 + 1e-8)
+        edge = edge / (edge.max() + 1e-8)
+        return edge
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        edge_mask = self.get_edge_mask(target)
+        weight = 1 + self.edge_weight * edge_mask
+        weight = weight.squeeze(1)
+        loss = F.cross_entropy(pred, target, reduction='none')
+        weighted_loss = (loss * weight).mean()
+        return weighted_loss
