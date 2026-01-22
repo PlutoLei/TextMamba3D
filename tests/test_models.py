@@ -139,3 +139,48 @@ class TestDecoder3D:
 
         # Output should be [B, out_channels, D, H, W]
         assert out.shape == (2, 4, 96, 96, 96)
+
+
+class TestTextMamba3D:
+    def test_full_model_forward(self):
+        """Test complete TextMamba3D model."""
+        from models.textmamba3d import TextMamba3D
+
+        model = TextMamba3D(
+            img_size=(96, 96, 96),
+            in_channels=4,
+            out_channels=4,
+            embed_dim=96,
+            depths=[2, 2, 2, 2],
+            text_embed_dim=256,
+            text_depth=2,
+        )
+
+        img = torch.randn(2, 4, 96, 96, 96)
+        text_ids = torch.randint(0, 30522, (2, 64))
+
+        out = model(img, text_ids)
+
+        assert out.shape == (2, 4, 96, 96, 96)
+
+    def test_model_get_features_for_contrastive(self):
+        """Test feature extraction for contrastive loss."""
+        from models.textmamba3d import TextMamba3D
+
+        model = TextMamba3D(
+            img_size=(96, 96, 96),
+            in_channels=4,
+            out_channels=4,
+            embed_dim=96,
+            depths=[2, 2, 2, 2],
+            text_embed_dim=256,
+            text_depth=2,
+        )
+
+        img = torch.randn(2, 4, 96, 96, 96)
+        text_ids = torch.randint(0, 30522, (2, 64))
+
+        out, img_feat, text_feat = model(img, text_ids, return_features=True)
+
+        assert img_feat.shape == (2, 256)  # Global image feature
+        assert text_feat.shape == (2, 256)  # Global text feature
