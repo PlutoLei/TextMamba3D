@@ -6,7 +6,6 @@ import os
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import yaml
 from torch.amp import autocast
 from torch.utils.data import DataLoader
@@ -21,6 +20,8 @@ from utils.metrics import (
     hausdorff_distance_95_brats_regions,
     BRATS_REGIONS,
 )
+from utils.sliding_window import gaussian_weight_3d  # noqa: F401 (available for future use)
+from utils.tta import tta_predict
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,55 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--no-amp', action='store_true',
                         help='Disable AMP inference')
     return parser.parse_args()
-
-
-# ---------------------------------------------------------------------------
-# Test-Time Augmentation: flip along each spatial axis, average predictions
-# ---------------------------------------------------------------------------
-
-def tta_predict(model, image, text_ids=None, attention_mask=None, use_text=True):
-    """Test-time augmentation: original + 3 axis flips, averaged softmax.
-
-    Flips along D, H, W axes independently, runs forward pass for each,
-    then averages the softmax probabilities for a more robust prediction.
-    """
-    # Axes to flip: dim 2=D, 3=H, 4=W in [B, C, D, H, W]
-    flip_axes = [[], [2], [3], [4]]
-
-    accum = None
-    for axes in flip_axes:
-        img_aug = image
-        for ax in axes:
-            img_aug = torch.flip(img_aug, [ax])
-
-        logits = model(img_aug, text_ids, attention_mask=attention_mask, use_text=use_text)
-
-        # Flip prediction back
-        for ax in axes:
-            logits = torch.flip(logits, [ax])
-
-        probs = F.softmax(logits, dim=1)
-        accum = probs if accum is None else accum + probs
-
-    return accum / len(flip_axes)
-
-
-# ---------------------------------------------------------------------------
-# Gaussian importance weighting for sliding window (3D)
-# ---------------------------------------------------------------------------
-
-def gaussian_weight_3d(patch_size, sigma_scale=0.125):
-    """Create 3D Gaussian importance map for sliding window inference.
-
-    Center voxels get higher weight, reducing stitching artifacts at patch borders.
-    """
-    coords = [np.arange(s) - (s - 1) / 2.0 for s in patch_size]
-    grid = np.stack(np.meshgrid(*coords, indexing='ij'), axis=-1)
-    sigma = np.array(patch_size) * sigma_scale
-    gauss = np.exp(-0.5 * np.sum((grid / sigma) ** 2, axis=-1))
-    gauss = gauss / gauss.max()
-    gauss = np.clip(gauss, 1e-4, 1.0)  # Avoid zero weights
-    return torch.from_numpy(gauss).float()
 
 
 # ---------------------------------------------------------------------------

@@ -43,3 +43,9 @@ training:
 
 eval:
   metrics: ["dice", "hd95", "assd"]
+
+inference:
+  overlap: 0.5
+  gaussian_sigma_scale: 0.125
+  use_tta: false
+  tta_flips: 8
