@@ -460,10 +460,7 @@ class TestRandModalityDropout:
         original = image.clone()
         dropout = RandModalityDropout(prob=1.0, max_drop=2)
         _ = dropout(image, mask)
-        # The source code does image = image.clone(), so original ref should be safe
-        # but the input tensor may be cloned internally
-        # Just verify output is valid
-        assert True
+        assert torch.equal(image, original), "Input tensor should not be modified in place"
 
     def test_max_drop_respected(self, multichannel_pair):
         """Number of dropped channels should not exceed max_drop."""
@@ -475,10 +472,9 @@ class TestRandModalityDropout:
             zeroed = sum(
                 (img_out[c] == 0).all().item() for c in range(image.shape[0])
             )
-            # zeroed could include channels that were already all zeros, but with random
-            # data this is extremely unlikely. At minimum, dropped count <= max_drop
-            # (plus any naturally-zero channels, which is near-impossible for randn).
-            assert zeroed <= max_drop + 1  # generous bound for safety
+            # With randn data, naturally-zero channels are near-impossible.
+            # Source: randint(1, min(max_drop+1, C)) → at most max_drop channels dropped.
+            assert zeroed <= max_drop, f"Dropped {zeroed} channels, max_drop={max_drop}"
 
     def test_single_channel_raises_on_max_drop_equal_channels(self):
         """With C=1 and max_drop=1, min(max_drop+1, C)=1 so randint(1,1) raises.
