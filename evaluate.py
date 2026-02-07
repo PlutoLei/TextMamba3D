@@ -20,7 +20,6 @@ from utils.metrics import (
     hausdorff_distance_95_brats_regions,
     BRATS_REGIONS,
 )
-from utils.sliding_window import gaussian_weight_3d  # noqa: F401 (available for future use)
 from utils.tta import tta_predict
 
 

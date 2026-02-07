@@ -19,11 +19,12 @@ from typing import Iterator, Optional
 import nibabel as nib
 import numpy as np
 import torch
+import torch.nn.functional as F
 import yaml
 from tqdm import tqdm
 
-from data.transforms import RandomCrop3D
 from models import TextMamba3D
+from models.text_encoder import TextMambaEncoder
 from utils.sliding_window import gaussian_weight_3d
 from utils.tta import tta_predict
 
@@ -56,7 +57,6 @@ class InferenceDataLoader:
 
     def __init__(self, patch_size: tuple[int, int, int] = (96, 96, 96)) -> None:
         self.patch_size = patch_size
-        self.crop = RandomCrop3D(patch_size)
 
     def load_case(self, case_dir: str) -> dict:
         """Load a single case for inference."""
@@ -147,6 +147,9 @@ class TextMamba3DInference:
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
 
+        text_max_len = self.config['model'].get('text_max_len', 128)
+        use_pretrained_text = self.config['model'].get('use_pretrained_text', True)
+
         self.model = TextMamba3D(
             img_size=tuple(self.config['model']['img_size']),
             in_channels=self.config['model']['in_channels'],
@@ -154,9 +157,11 @@ class TextMamba3DInference:
             embed_dim=self.config['model']['embed_dim'],
             depths=self.config['model']['depths'],
             text_embed_dim=self.config['model']['text_embed_dim'],
+            text_max_len=text_max_len,
+            use_pretrained_text=use_pretrained_text,
         ).to(self.device)
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
         self.model.load_state_dict(checkpoint['model'])
         self.model.eval()
 
@@ -173,7 +178,7 @@ class TextMamba3DInference:
         """Initialize tokenizer with fallback."""
         try:
             from transformers import AutoTokenizer
-            return AutoTokenizer.from_pretrained('bert-base-uncased')
+            return AutoTokenizer.from_pretrained(TextMambaEncoder.PUBMEDBERT_NAME)
         except ImportError:
             print('Warning: transformers not installed, using fallback tokenization')
             return None
@@ -203,8 +208,8 @@ class TextMamba3DInference:
     ) -> torch.Tensor:
         """Predict on a single patch.
 
-        When TTA is enabled, returns averaged softmax probabilities.
-        Otherwise returns raw logits. Both have shape [num_classes, D, H, W].
+        Always returns softmax probabilities of shape [num_classes, D, H, W],
+        regardless of whether TTA is enabled.
         """
         patch = patch.unsqueeze(0).to(self.device)
 
@@ -217,6 +222,7 @@ class TextMamba3DInference:
                 )
             else:
                 pred = self.model(patch, text_ids, use_text=text_ids is not None)
+                pred = F.softmax(pred, dim=1)
 
         return pred.squeeze(0)
 
@@ -296,7 +302,8 @@ class TextMamba3DInference:
     ) -> dict:
         """Run inference on a single case."""
         data = self.data_loader.load_case(case_dir)
-        prob = self.predict_volume(data['image'], text=text)
+        overlap = self.config.get('inference', {}).get('overlap', 0.5)
+        prob = self.predict_volume(data['image'], text=text, overlap=overlap)
 
         prediction = prob.numpy() if return_prob else prob.argmax(dim=0).numpy().astype(np.uint8)
 

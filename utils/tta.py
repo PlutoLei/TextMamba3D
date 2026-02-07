@@ -38,7 +38,12 @@ def tta_predict(
     Returns:
         Averaged softmax probabilities of shape [B, num_classes, D, H, W].
     """
-    flip_axes = FLIP_AXES_8 if num_flips == 8 else FLIP_AXES_4
+    if num_flips == 8:
+        flip_axes = FLIP_AXES_8
+    elif num_flips == 4:
+        flip_axes = FLIP_AXES_4
+    else:
+        raise ValueError(f"num_flips must be 4 or 8, got {num_flips}")
 
     accum = None
     for axes in flip_axes:
