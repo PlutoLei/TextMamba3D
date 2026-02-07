@@ -1,6 +1,7 @@
 # models/mamba_block.py
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from einops import rearrange
 
 try:
@@ -234,8 +235,10 @@ class CrossScanBiMamba3DLayer(nn.Module):
         d_conv: int = 4,
         expand: int = 2,
         dropout: float = 0.0,
+        use_checkpoint: bool = False,
     ):
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.blocks = nn.ModuleList([
             CrossScanBiMamba3DBlock(dim, spatial_dims, d_state, d_conv, expand, dropout)
             for _ in range(depth)
@@ -243,5 +246,8 @@ class CrossScanBiMamba3DLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for block in self.blocks:
-            x = block(x)
+            if self.use_checkpoint and self.training:
+                x = grad_checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         return x

@@ -1,7 +1,6 @@
 # models/decoder_3d.py
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
 from einops import rearrange
 from .mamba_block import CrossScanBiMamba3DLayer
 
@@ -74,6 +73,7 @@ class MambaDecoder3D(nn.Module):
                 spatial_dims=spatial,
                 d_state=d_state,
                 dropout=dropout,
+                use_checkpoint=use_checkpoint,
             )
             self.stages.append(stage)
 
@@ -113,10 +113,7 @@ class MambaDecoder3D(nn.Module):
         x = features[-1]
 
         for i, stage in enumerate(self.stages):
-            if self.use_checkpoint and self.training:
-                x = checkpoint(stage, x, use_reentrant=False)
-            else:
-                x = stage(x)
+            x = stage(x)
 
             if i < len(self.upsamples):
                 x = self.upsamples[i](x)

@@ -176,6 +176,83 @@ class RandIntensityShift:
         return image, mask
 
 
+class RandElasticDeformation3D:
+    """Random elastic deformation for 3D medical images.
+
+    Generates a low-resolution random displacement field, smooths it with
+    Gaussian filter, upsamples to full resolution, and applies via grid_sample.
+    """
+
+    def __init__(self, sigma: float = 4.0, magnitude: float = 4.0, prob: float = 0.2):
+        self.sigma = sigma
+        self.magnitude = magnitude
+        self.prob = prob
+
+    def __call__(self, image: torch.Tensor, mask: torch.Tensor):
+        if np.random.random() > self.prob:
+            return image, mask
+
+        _, D, H, W = image.shape
+
+        # Low-res random displacement field
+        grid_size = (max(D // 8, 3), max(H // 8, 3), max(W // 8, 3))
+        disp = np.random.randn(3, *grid_size).astype(np.float32)
+
+        # Smooth with Gaussian (conditional import to avoid hard dependency)
+        from scipy.ndimage import gaussian_filter
+        for i in range(3):
+            disp[i] = gaussian_filter(disp[i], sigma=self.sigma / 8)
+
+        # Upsample to full resolution
+        disp_tensor = torch.from_numpy(disp).unsqueeze(0)
+        disp_full = F.interpolate(disp_tensor, size=(D, H, W), mode='trilinear', align_corners=False).squeeze(0)
+
+        # Normalize and scale
+        disp_full = disp_full * (self.magnitude / max(D, H, W) * 2)
+
+        # Build sampling grid
+        base_grid = torch.stack(torch.meshgrid(
+            torch.linspace(-1, 1, D),
+            torch.linspace(-1, 1, H),
+            torch.linspace(-1, 1, W),
+            indexing='ij',
+        ), dim=-1).unsqueeze(0)
+
+        grid = base_grid + disp_full.permute(1, 2, 3, 0).unsqueeze(0)
+
+        # Apply to image (bilinear) and mask (nearest)
+        img_5d = image.unsqueeze(0)
+        image_out = F.grid_sample(img_5d, grid, mode='bilinear', padding_mode='zeros', align_corners=False).squeeze(0)
+
+        mask_5d = mask.unsqueeze(0).unsqueeze(0).float()
+        mask_out = F.grid_sample(mask_5d, grid, mode='nearest', padding_mode='zeros', align_corners=False).squeeze(0).squeeze(0).long()
+
+        return image_out, mask_out
+
+
+class RandModalityDropout:
+    """Randomly zero out entire modality channels during training.
+
+    Prevents overreliance on any single MRI modality (T1, T1ce, T2, FLAIR).
+    """
+
+    def __init__(self, prob: float = 0.15, max_drop: int = 1):
+        self.prob = prob
+        self.max_drop = max_drop
+
+    def __call__(self, image: torch.Tensor, mask: torch.Tensor):
+        if np.random.random() > self.prob:
+            return image, mask
+
+        C = image.shape[0]
+        n_drop = np.random.randint(1, min(self.max_drop + 1, C))
+        drop_idx = np.random.choice(C, size=n_drop, replace=False)
+        image = image.clone()
+        for idx in drop_idx:
+            image[idx] = 0.0
+        return image, mask
+
+
 class Compose:
     """Compose transforms."""
 
@@ -192,14 +269,25 @@ class Compose:
         return image, mask
 
 
-def get_train_transforms(patch_size: Tuple[int, int, int]):
-    return Compose([
+def get_train_transforms(
+    patch_size: Tuple[int, int, int],
+    use_elastic: bool = False,
+    use_modality_dropout: bool = False,
+):
+    transforms = [
         RandomCrop3D(patch_size),
         RandomFlip3D(prob=0.5),
         RandAffine3D(rot_range=0.1, scale_range=0.1, prob=0.3),
+    ]
+    if use_elastic:
+        transforms.append(RandElasticDeformation3D(sigma=4.0, magnitude=4.0, prob=0.2))
+    transforms.extend([
         RandGaussianNoise(std=0.1, prob=0.2),
         RandIntensityShift(shift_range=0.1, scale_range=0.1, prob=0.2),
     ])
+    if use_modality_dropout:
+        transforms.append(RandModalityDropout(prob=0.15, max_drop=1))
+    return Compose(transforms)
 
 
 def get_val_transforms(patch_size: Tuple[int, int, int]):
