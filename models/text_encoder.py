@@ -34,10 +34,12 @@ class TextMambaEncoder(nn.Module):
         dropout: float = 0.1,
         use_pretrained: bool = True,
         unfreeze_last_n: int = 0,
+        model_path: str | None = None,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.use_pretrained = use_pretrained and TRANSFORMERS_AVAILABLE
+        self.model_path = model_path
 
         if self.use_pretrained:
             self._init_pretrained(embed_dim, depth, d_state, dropout, unfreeze_last_n)
@@ -46,7 +48,8 @@ class TextMambaEncoder(nn.Module):
 
     def _init_pretrained(self, embed_dim, depth, d_state, dropout, unfreeze_last_n):
         """Initialize with frozen PubMedBERT + projection + Mamba."""
-        self.bert = AutoModel.from_pretrained(self.PUBMEDBERT_NAME)
+        load_path = self.model_path or self.PUBMEDBERT_NAME
+        self.bert = AutoModel.from_pretrained(load_path)
 
         # Freeze all BERT parameters
         for param in self.bert.parameters():

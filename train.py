@@ -180,10 +180,12 @@ def main():
 
     # Initialize PubMedBERT tokenizer
     use_pretrained_text = config['model'].get('use_pretrained_text', True)
+    text_model_path = config['model'].get('text_model_path', None)
     tokenizer = None
     if use_pretrained_text:
-        print(f"Loading PubMedBERT tokenizer: {TextMambaEncoder.PUBMEDBERT_NAME}")
-        tokenizer = AutoTokenizer.from_pretrained(TextMambaEncoder.PUBMEDBERT_NAME)
+        tokenizer_path = text_model_path or TextMambaEncoder.PUBMEDBERT_NAME
+        print(f"Loading PubMedBERT tokenizer: {tokenizer_path}")
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 
     # 根据配置选择数据集类型
     dataset_type = config['data'].get('dataset_type', 'brats2021')
@@ -268,6 +270,7 @@ def main():
         use_pretrained_text=use_pretrained_text,
         unfreeze_text_layers=config['model'].get('unfreeze_text_layers', 0),
         use_checkpoint=use_checkpoint,
+        text_model_path=text_model_path,
     ).to(device)
 
     # Count parameters
@@ -286,7 +289,7 @@ def main():
         contrastive_weight=config['loss']['contrastive_weight'],
         temperature=config['loss']['temperature'],
         class_weights=class_weights,
-    )
+    ).to(device)
 
     # Optimizer
     optimizer = torch.optim.AdamW(

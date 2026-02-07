@@ -20,6 +20,7 @@ model:
   text_max_len: 256       # 增加文本长度以容纳专家描述
   use_pretrained_text: true    # Use PubMedBERT pretrained text encoder
   unfreeze_text_layers: 0      # Number of BERT layers to unfreeze (0=all frozen)
+  text_model_path: "./pretrained/pubmedbert"  # Local path; set to null to download from HuggingFace
 
 loss:
   dice_weight: 1.0

@@ -11,3 +11,4 @@ logs/
 *.pth
 .DS_Store
 .idea/
+pretrained/

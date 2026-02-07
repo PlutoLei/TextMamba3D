@@ -32,6 +32,7 @@ class TextMamba3D(nn.Module):
         use_pretrained_text: bool = True,
         unfreeze_text_layers: int = 0,
         use_checkpoint: bool = False,
+        text_model_path: str | None = None,
     ) -> None:
         super().__init__()
 
@@ -58,6 +59,7 @@ class TextMamba3D(nn.Module):
             dropout=dropout,
             use_pretrained=use_pretrained_text,
             unfreeze_last_n=unfreeze_text_layers,
+            model_path=text_model_path,
         )
 
         self.fusion = MambaFusion(
