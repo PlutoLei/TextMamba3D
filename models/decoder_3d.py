@@ -50,7 +50,6 @@ class MambaDecoder3D(nn.Module):
     ):
         super().__init__()
         self.num_stages = len(depths)
-        self.use_checkpoint = use_checkpoint
 
         # Calculate spatial dimensions
         d, h, w = img_size[0] // patch_size[0], \

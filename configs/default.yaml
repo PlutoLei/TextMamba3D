@@ -5,6 +5,10 @@ data:
   batch_size: 1           # 8GB 显存推荐
   num_workers: 2          # 减少内存占用
 
+augmentation:
+  use_elastic: false
+  use_modality_dropout: false
+
 training_tips:
   # 8GB 显存优化配置
   # - batch_size=1 + AMP + 梯度累积 4 步 ≈ 有效 batch_size=4

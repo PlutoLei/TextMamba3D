@@ -99,7 +99,6 @@ class MambaEncoder3D(nn.Module):
         super().__init__()
         self.num_stages = len(depths)
         self.embed_dim = embed_dim
-        self.use_checkpoint = use_checkpoint
 
         # Patch embedding
         self.patch_embed = PatchEmbed3D(

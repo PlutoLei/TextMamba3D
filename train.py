@@ -169,7 +169,13 @@ def main():
     print(f'No-text training ratio: {args.no_text_ratio}')
 
     # Data
-    train_transform = get_train_transforms(tuple(config['data']['patch_size']))
+    use_elastic = config.get('augmentation', {}).get('use_elastic', False)
+    use_modality_dropout = config.get('augmentation', {}).get('use_modality_dropout', False)
+    train_transform = get_train_transforms(
+        tuple(config['data']['patch_size']),
+        use_elastic=use_elastic,
+        use_modality_dropout=use_modality_dropout,
+    )
     val_transform = get_val_transforms(tuple(config['data']['patch_size']))
 
     # Initialize PubMedBERT tokenizer

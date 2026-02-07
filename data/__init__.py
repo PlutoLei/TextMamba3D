@@ -9,6 +9,8 @@ from .transforms import (
     RandAffine3D,
     RandGaussianNoise,
     RandIntensityShift,
+    RandElasticDeformation3D,
+    RandModalityDropout,
     Compose,
     get_train_transforms,
     get_val_transforms,

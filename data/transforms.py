@@ -187,6 +187,11 @@ class RandElasticDeformation3D:
         self.sigma = sigma
         self.magnitude = magnitude
         self.prob = prob
+        try:
+            from scipy.ndimage import gaussian_filter
+            self._gaussian_filter = gaussian_filter
+        except ImportError:
+            raise ImportError("scipy is required for elastic deformation: pip install scipy")
 
     def __call__(self, image: torch.Tensor, mask: torch.Tensor):
         if np.random.random() > self.prob:
@@ -198,10 +203,9 @@ class RandElasticDeformation3D:
         grid_size = (max(D // 8, 3), max(H // 8, 3), max(W // 8, 3))
         disp = np.random.randn(3, *grid_size).astype(np.float32)
 
-        # Smooth with Gaussian (conditional import to avoid hard dependency)
-        from scipy.ndimage import gaussian_filter
+        # Smooth with Gaussian
         for i in range(3):
-            disp[i] = gaussian_filter(disp[i], sigma=self.sigma / 8)
+            disp[i] = self._gaussian_filter(disp[i], sigma=self.sigma / 8)
 
         # Upsample to full resolution
         disp_tensor = torch.from_numpy(disp).unsqueeze(0)
@@ -210,15 +214,20 @@ class RandElasticDeformation3D:
         # Normalize and scale
         disp_full = disp_full * (self.magnitude / max(D, H, W) * 2)
 
-        # Build sampling grid
+        # Build sampling grid — grid_sample expects (x=W, y=H, z=D) order
         base_grid = torch.stack(torch.meshgrid(
             torch.linspace(-1, 1, D),
             torch.linspace(-1, 1, H),
             torch.linspace(-1, 1, W),
             indexing='ij',
-        ), dim=-1).unsqueeze(0)
+        ), dim=-1).unsqueeze(0)  # [1, D, H, W, 3] but order is (D, H, W)
 
-        grid = base_grid + disp_full.permute(1, 2, 3, 0).unsqueeze(0)
+        # Flip to (W, H, D) for grid_sample convention
+        base_grid = base_grid[..., [2, 1, 0]]
+
+        # Displacement field is in (D, H, W) order, reorder to (W, H, D)
+        disp_reordered = disp_full[[2, 1, 0]]  # [3, D, H, W] with (W, H, D) component order
+        grid = base_grid + disp_reordered.permute(1, 2, 3, 0).unsqueeze(0)
 
         # Apply to image (bilinear) and mask (nearest)
         img_5d = image.unsqueeze(0)
