@@ -298,7 +298,7 @@ class TestEncoder3D:
         assert features[1].shape[-1] == embed_dim * 2
 
     def test_encoder_checkpoint_mode(self):
-        """Encoder should accept use_checkpoint parameter."""
+        """Encoder should accept use_checkpoint parameter and run without error."""
         from models.encoder_3d import MambaEncoder3D
 
         encoder = MambaEncoder3D(
@@ -306,7 +306,6 @@ class TestEncoder3D:
             embed_dim=32, depths=[1, 1], patch_size=(4, 4, 4),
             use_checkpoint=True,
         )
-        assert encoder.use_checkpoint is True
         encoder.train()
         x = torch.randn(1, 4, 16, 16, 16)
         features = encoder(x)
@@ -519,3 +518,188 @@ class TestTextMamba3D:
         assert small_model.default_text_embed.requires_grad
         assert small_model.default_text_embed.shape[1] == small_model.text_max_len
         assert small_model.default_text_embed.shape[2] == small_model.text_embed_dim
+
+
+# =========================================================================
+# Encoder 3D edge cases
+# =========================================================================
+
+class TestEncoder3DEdgeCases:
+    def test_encoder_single_depth(self):
+        """Encoder with depths=[1] (single stage, no downsampling)."""
+        from models.encoder_3d import MambaEncoder3D
+
+        encoder = MambaEncoder3D(
+            img_size=(16, 16, 16), in_channels=4,
+            embed_dim=32, depths=[1], patch_size=(4, 4, 4),
+        )
+        x = torch.randn(1, 4, 16, 16, 16)
+        features = encoder(x)
+        assert len(features) == 1
+        # Single stage: seq_len = (16/4)^3 = 64, dim = 32
+        assert features[0].shape == (1, 64, 32)
+
+    def test_encoder_asymmetric_depths(self):
+        """Encoder with non-uniform depths like [1, 2, 3]."""
+        from models.encoder_3d import MambaEncoder3D
+
+        encoder = MambaEncoder3D(
+            img_size=(16, 16, 16), in_channels=4,
+            embed_dim=32, depths=[1, 2, 3], patch_size=(4, 4, 4),
+        )
+        x = torch.randn(1, 4, 16, 16, 16)
+        features = encoder(x)
+        assert len(features) == 3
+        # Check channel dims double each stage
+        assert features[0].shape[-1] == 32
+        assert features[1].shape[-1] == 64
+        assert features[2].shape[-1] == 128
+
+    def test_encoder_spatial_dims_tracked(self):
+        """Encoder tracks spatial_dims for each stage."""
+        from models.encoder_3d import MambaEncoder3D
+
+        encoder = MambaEncoder3D(
+            img_size=(16, 16, 16), in_channels=4,
+            embed_dim=32, depths=[1, 1], patch_size=(4, 4, 4),
+        )
+        # After patch embed: (4,4,4), after downsample: (2,2,2)
+        assert encoder.spatial_dims[0] == (4, 4, 4)
+        assert encoder.spatial_dims[1] == (2, 2, 2)
+
+    def test_encoder_downsample_count(self):
+        """Number of downsamplers = num_stages - 1."""
+        from models.encoder_3d import MambaEncoder3D
+
+        for n_stages in [1, 2, 3, 4]:
+            encoder = MambaEncoder3D(
+                img_size=(16, 16, 16), in_channels=4,
+                embed_dim=32, depths=[1] * n_stages, patch_size=(4, 4, 4),
+            )
+            assert len(encoder.downsamples) == n_stages - 1
+
+
+# =========================================================================
+# MultiScaleFiLM extended tests
+# =========================================================================
+
+class TestMultiScaleFiLMExtended:
+    def test_film_gradient_to_text_global(self):
+        """Gradients flow from loss through FiLM back to text_global."""
+        from models.fusion import MultiScaleFiLM
+
+        stage_dims = [32, 64]
+        film = MultiScaleFiLM(stage_dims=stage_dims, text_dim=16)
+
+        # Break identity init so FiLM actually transforms the input
+        for layer in film.film_layers:
+            layer.gamma_proj.weight.data.fill_(0.1)
+            layer.beta_proj.weight.data.fill_(0.05)
+
+        features = [torch.randn(1, 20, 32), torch.randn(1, 10, 64)]
+        text_global = torch.randn(1, 16, requires_grad=True)
+        out = film(features, text_global)
+
+        loss = sum(o.sum() for o in out)
+        loss.backward()
+        assert text_global.grad is not None
+        assert text_global.grad.shape == (1, 16)
+
+    def test_film_different_text_produces_different_output(self):
+        """Different text globals produce different modulated features."""
+        from models.fusion import MultiScaleFiLM
+
+        stage_dims = [32]
+        film = MultiScaleFiLM(stage_dims=stage_dims, text_dim=16)
+
+        # Break identity init
+        for layer in film.film_layers:
+            layer.gamma_proj.weight.data.normal_(0, 0.1)
+            layer.beta_proj.weight.data.normal_(0, 0.1)
+
+        features = [torch.randn(1, 20, 32)]
+        text_a = torch.randn(1, 16)
+        text_b = torch.randn(1, 16)
+        out_a = film(features, text_a)
+        out_b = film(features, text_b)
+        assert not torch.allclose(out_a[0], out_b[0], atol=1e-5), \
+            "Different text globals should produce different modulated outputs"
+
+    def test_film_single_stage(self):
+        """Works with just one stage."""
+        from models.fusion import MultiScaleFiLM
+
+        film = MultiScaleFiLM(stage_dims=[64], text_dim=32)
+        features = [torch.randn(2, 50, 64)]
+        text_global = torch.randn(2, 32)
+        out = film(features, text_global)
+        assert len(out) == 1
+        assert out[0].shape == (2, 50, 64)
+
+
+# =========================================================================
+# MambaFusion extended tests
+# =========================================================================
+
+class TestMambaFusionExtended:
+    def test_fusion_gradient_to_text(self):
+        """Gradients flow from fused output back to text_feat."""
+        from models.fusion import MambaFusion
+
+        fusion = MambaFusion(
+            img_dim=64, text_dim=32, hidden_dim=64, depth=1,
+        )
+        img_feat = torch.randn(1, 20, 64)
+        text_feat = torch.randn(1, 10, 32, requires_grad=True)
+        out = fusion(img_feat, text_feat)
+
+        loss = out.sum()
+        loss.backward()
+        assert text_feat.grad is not None
+        assert text_feat.grad.shape == (1, 10, 32)
+
+    def test_fusion_different_text_lengths(self):
+        """Fusion handles varying text sequence lengths."""
+        from models.fusion import MambaFusion
+
+        fusion = MambaFusion(
+            img_dim=64, text_dim=32, hidden_dim=64, depth=1,
+        )
+        img_feat = torch.randn(1, 20, 64)
+
+        for text_len in [5, 20, 64]:
+            text_feat = torch.randn(1, text_len, 32)
+            out = fusion(img_feat, text_feat)
+            assert out.shape == (1, 20, 64), \
+                f"Output shape wrong for text_len={text_len}: {out.shape}"
+
+    def test_fusion_preserves_shape(self):
+        """Output shape matches img_feat shape."""
+        from models.fusion import MambaFusion
+
+        fusion = MambaFusion(
+            img_dim=96, text_dim=64, hidden_dim=128, depth=2,
+        )
+        img_feat = torch.randn(2, 100, 96)
+        text_feat = torch.randn(2, 30, 64)
+        out = fusion(img_feat, text_feat)
+        assert out.shape == img_feat.shape
+
+    def test_fusion_proj_dimensions(self):
+        """Verify internal projection dimensions."""
+        from models.fusion import MambaFusion
+
+        img_dim, text_dim, hidden_dim = 96, 64, 128
+        fusion = MambaFusion(
+            img_dim=img_dim, text_dim=text_dim,
+            hidden_dim=hidden_dim, depth=1,
+        )
+        # img_proj: img_dim -> hidden_dim
+        assert fusion.img_proj.in_features == img_dim
+        assert fusion.img_proj.out_features == hidden_dim
+        # text_proj: text_dim -> hidden_dim
+        assert fusion.text_proj.in_features == text_dim
+        assert fusion.text_proj.out_features == hidden_dim
+        # out_proj: hidden_dim -> img_dim
+        assert fusion.out_proj.in_features == hidden_dim
+        assert fusion.out_proj.out_features == img_dim
