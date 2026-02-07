@@ -1,99 +1,244 @@
 # evaluate.py
-import os
+"""Evaluation script for TextMamba3D model with TTA and AMP support."""
+
 import argparse
-import yaml
-import torch
+import os
+
 import numpy as np
+import torch
+import torch.nn.functional as F
+import yaml
+from torch.amp import autocast
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from models import TextMamba3D
 from data import BraTSDataset, get_val_transforms
-from utils.metrics import dice_score, hausdorff_distance_95
+from data.brats_textbrats_dataset import TextBraTSDataset
+from models import TextMamba3D
+from models.text_encoder import TextMambaEncoder
+from utils.metrics import (
+    dice_score_brats_regions,
+    hausdorff_distance_95_brats_regions,
+    BRATS_REGIONS,
+)
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Evaluate TextMamba3D')
     parser.add_argument('--config', type=str, default='configs/default.yaml')
     parser.add_argument('--checkpoint', type=str, required=True)
     parser.add_argument('--save_pred', action='store_true')
+    parser.add_argument('--no-text', action='store_true',
+                        help='Evaluate without text guidance')
+    parser.add_argument('--split', type=str, default='test',
+                        choices=['train', 'val', 'test'])
+    parser.add_argument('--tta', action='store_true',
+                        help='Enable test-time augmentation (flip along 3 axes)')
+    parser.add_argument('--no-amp', action='store_true',
+                        help='Disable AMP inference')
     return parser.parse_args()
 
 
+# ---------------------------------------------------------------------------
+# Test-Time Augmentation: flip along each spatial axis, average predictions
+# ---------------------------------------------------------------------------
+
+def tta_predict(model, image, text_ids=None, attention_mask=None, use_text=True):
+    """Test-time augmentation: original + 3 axis flips, averaged softmax.
+
+    Flips along D, H, W axes independently, runs forward pass for each,
+    then averages the softmax probabilities for a more robust prediction.
+    """
+    # Axes to flip: dim 2=D, 3=H, 4=W in [B, C, D, H, W]
+    flip_axes = [[], [2], [3], [4]]
+
+    accum = None
+    for axes in flip_axes:
+        img_aug = image
+        for ax in axes:
+            img_aug = torch.flip(img_aug, [ax])
+
+        logits = model(img_aug, text_ids, attention_mask=attention_mask, use_text=use_text)
+
+        # Flip prediction back
+        for ax in axes:
+            logits = torch.flip(logits, [ax])
+
+        probs = F.softmax(logits, dim=1)
+        accum = probs if accum is None else accum + probs
+
+    return accum / len(flip_axes)
+
+
+# ---------------------------------------------------------------------------
+# Gaussian importance weighting for sliding window (3D)
+# ---------------------------------------------------------------------------
+
+def gaussian_weight_3d(patch_size, sigma_scale=0.125):
+    """Create 3D Gaussian importance map for sliding window inference.
+
+    Center voxels get higher weight, reducing stitching artifacts at patch borders.
+    """
+    coords = [np.arange(s) - (s - 1) / 2.0 for s in patch_size]
+    grid = np.stack(np.meshgrid(*coords, indexing='ij'), axis=-1)
+    sigma = np.array(patch_size) * sigma_scale
+    gauss = np.exp(-0.5 * np.sum((grid / sigma) ** 2, axis=-1))
+    gauss = gauss / gauss.max()
+    gauss = np.clip(gauss, 1e-4, 1.0)  # Avoid zero weights
+    return torch.from_numpy(gauss).float()
+
+
+# ---------------------------------------------------------------------------
+# Main evaluation loop
+# ---------------------------------------------------------------------------
+
 @torch.no_grad()
-def evaluate(model, loader, device, save_pred=False, save_dir='predictions'):
+def evaluate(
+    model, loader, device, save_pred=False, save_dir='predictions',
+    use_text=True, use_tta=False, use_amp=True,
+) -> dict:
+    """Evaluate model on dataset using BraTS standard regions (ET, TC, WT)."""
     model.eval()
 
-    all_dice = {f'class_{i}': [] for i in range(1, 4)}
-    all_hd95 = {f'class_{i}': [] for i in range(1, 4)}
+    all_dice = {r: [] for r in BRATS_REGIONS}
+    all_hd95 = {r: [] for r in BRATS_REGIONS}
 
     if save_pred:
         os.makedirs(save_dir, exist_ok=True)
 
+    mode_parts = []
+    if use_text:
+        mode_parts.append('text-guided')
+    else:
+        mode_parts.append('no-text (fair mode)')
+    if use_tta:
+        mode_parts.append('TTA')
+    if use_amp:
+        mode_parts.append('AMP')
+    print(f'\nEvaluation mode: {", ".join(mode_parts)}\n')
+
     for batch in tqdm(loader, desc='Evaluating'):
         image = batch['image'].to(device)
         mask = batch['mask'].to(device)
-        text_ids = batch['text_ids'].to(device)
         case_name = batch['case_name'][0]
 
-        pred = model(image, text_ids)
-        pred_argmax = pred.argmax(dim=1)
+        text_ids = batch['text_ids'].to(device) if use_text else None
+        attn_mask = batch.get('attention_mask')
+        if use_text and attn_mask is not None:
+            attn_mask = attn_mask.to(device)
+        else:
+            attn_mask = None
 
-        # Dice scores
-        dice = dice_score(pred, mask, num_classes=4)
-        for c in range(1, 4):
-            all_dice[f'class_{c}'].append(dice[f'dice_class_{c}'])
+        with autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp and device.type == 'cuda'):
+            if use_tta:
+                probs = tta_predict(model, image, text_ids, attn_mask, use_text)
+                pred_argmax = probs.argmax(dim=1)
+                # Use logits-like tensor for dice_score_brats_regions
+                pred_for_dice = probs
+            else:
+                pred = model(image, text_ids, attention_mask=attn_mask, use_text=use_text)
+                pred_argmax = pred.argmax(dim=1)
+                pred_for_dice = pred
 
-        # HD95
+        # BraTS region Dice scores
+        dice = dice_score_brats_regions(pred_for_dice, mask)
+        for r in BRATS_REGIONS:
+            all_dice[r].append(dice[f'dice_{r}'])
+
+        # BraTS region HD95
         pred_np = pred_argmax[0].cpu().numpy()
         mask_np = mask[0].cpu().numpy()
+        hd95 = hausdorff_distance_95_brats_regions(pred_np, mask_np)
+        for r in BRATS_REGIONS:
+            val = hd95[f'hd95_{r}']
+            if not np.isnan(val):
+                all_hd95[r].append(val)
 
-        for c in range(1, 4):
-            pred_c = (pred_np == c).astype(np.uint8)
-            mask_c = (mask_np == c).astype(np.uint8)
-            hd95 = hausdorff_distance_95(pred_c, mask_c)
-            if not np.isnan(hd95):
-                all_hd95[f'class_{c}'].append(hd95)
-
-        # Save prediction
         if save_pred:
             np.save(os.path.join(save_dir, f'{case_name}_pred.npy'), pred_np)
 
     # Summary
-    print('\n=== Evaluation Results ===')
-    print('\nDice Scores:')
-    for c in range(1, 4):
-        scores = all_dice[f'class_{c}']
-        print(f'  Class {c}: {np.mean(scores):.4f} +/- {np.std(scores):.4f}')
+    print('\n=== Evaluation Results (BraTS Regions) ===')
 
-    mean_dice = np.mean([np.mean(v) for v in all_dice.values()])
+    print('\nDice Scores:')
+    dice_means = {}
+    for r in BRATS_REGIONS:
+        scores = all_dice[r]
+        mean_val = np.mean(scores) if scores else 0.0
+        std_val = np.std(scores) if scores else 0.0
+        dice_means[r] = mean_val
+        print(f'  {r}: {mean_val:.4f} +/- {std_val:.4f}')
+    mean_dice = np.mean(list(dice_means.values()))
     print(f'  Mean: {mean_dice:.4f}')
 
-    print('\nHD95:')
-    for c in range(1, 4):
-        scores = all_hd95[f'class_{c}']
+    print('\nHD95 (mm):')
+    hd95_means = {}
+    for r in BRATS_REGIONS:
+        scores = all_hd95[r]
         if scores:
-            print(f'  Class {c}: {np.mean(scores):.2f} +/- {np.std(scores):.2f}')
+            mean_val = np.mean(scores)
+            std_val = np.std(scores)
+            hd95_means[r] = mean_val
+            print(f'  {r}: {mean_val:.2f} +/- {std_val:.2f}')
+        else:
+            hd95_means[r] = np.nan
+            print(f'  {r}: N/A')
 
-    return {'dice': mean_dice}
+    return {
+        'dice_mean': mean_dice,
+        'dice_ET': dice_means.get('ET', 0),
+        'dice_TC': dice_means.get('TC', 0),
+        'dice_WT': dice_means.get('WT', 0),
+        'hd95_ET': hd95_means.get('ET', np.nan),
+        'hd95_TC': hd95_means.get('TC', np.nan),
+        'hd95_WT': hd95_means.get('WT', np.nan),
+        'all_dice': all_dice,
+        'all_hd95': all_hd95,
+    }
 
 
-def main():
+def main() -> None:
     args = parse_args()
-    config = yaml.safe_load(open(args.config))
+
+    with open(args.config, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    use_text = not args.no_text
+    use_amp = not args.no_amp and device.type == 'cuda'
 
-    # Data
+    # Tokenizer
+    use_pretrained_text = config['model'].get('use_pretrained_text', True)
+    tokenizer = None
+    if use_pretrained_text:
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(TextMambaEncoder.PUBMEDBERT_NAME)
+
     transform = get_val_transforms(tuple(config['data']['patch_size']))
-    dataset = BraTSDataset(
-        data_dir=config['data']['data_dir'],
-        split='test',
-        transform=transform,
-    )
-    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    max_text_len = config['model'].get('text_max_len', 128)
 
-    # Model
+    dataset_type = config['data'].get('dataset_type', 'brats2021')
+    if dataset_type == 'textbrats':
+        dataset = TextBraTSDataset(
+            data_dir=config['data']['data_dir'],
+            split=args.split,
+            transform=transform,
+            tokenizer=tokenizer,
+            max_text_len=max_text_len,
+            train_ratio=config['data'].get('train_ratio', 0.8),
+        )
+    else:
+        dataset = BraTSDataset(
+            data_dir=config['data']['data_dir'],
+            split=args.split,
+            transform=transform,
+            tokenizer=tokenizer,
+            max_text_len=max_text_len,
+        )
+
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    print(f'Dataset: {len(dataset)} samples from {args.split} split')
+
     model = TextMamba3D(
         img_size=tuple(config['model']['img_size']),
         in_channels=config['model']['in_channels'],
@@ -101,15 +246,21 @@ def main():
         embed_dim=config['model']['embed_dim'],
         depths=config['model']['depths'],
         text_embed_dim=config['model']['text_embed_dim'],
+        text_max_len=max_text_len,
+        use_pretrained_text=use_pretrained_text,
     ).to(device)
 
-    # Load checkpoint
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(checkpoint['model'])
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    model.load_state_dict(ckpt['model'])
     print(f'Loaded checkpoint from {args.checkpoint}')
 
-    # Evaluate
-    results = evaluate(model, loader, device, save_pred=args.save_pred)
+    evaluate(
+        model, loader, device,
+        save_pred=args.save_pred,
+        use_text=use_text,
+        use_tta=args.tta,
+        use_amp=use_amp,
+    )
 
 
 if __name__ == '__main__':

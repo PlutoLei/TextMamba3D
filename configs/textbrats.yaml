@@ -1,0 +1,51 @@
+# configs/textbrats.yaml
+# TextBraTS Configuration - 使用专家标注文本，无信息泄露
+
+data:
+  # TextBraTS + BraTS2020 数据路径
+  data_dir: "./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
+  dataset_type: "textbrats"  # 使用 TextBraTS 数据加载器
+  patch_size: [64, 64, 64]  # 减小以节省内存 (8GB RAM)
+  batch_size: 1
+  num_workers: 0  # 避免 WSL 多进程问题
+  train_ratio: 0.8  # 80% 训练, 20% 验证
+
+model:
+  img_size: [64, 64, 64]  # 与 patch_size 一致
+  in_channels: 4          # T1, T1ce, T2, FLAIR
+  out_channels: 4         # background, necrotic, edema, enhancing
+  embed_dim: 96
+  depths: [2, 2, 2, 2]
+  text_embed_dim: 256
+  text_max_len: 256       # 增加文本长度以容纳专家描述
+  use_pretrained_text: true    # Use PubMedBERT pretrained text encoder
+  unfreeze_text_layers: 0      # Number of BERT layers to unfreeze (0=all frozen)
+
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  edge_weight: 1.0
+  # 关闭对比学习 (batch_size=1 时无效)
+  contrastive_weight: 0.0
+  temperature: 0.07
+  # BraTS class weights: [background, necrotic, edema, enhancing]
+  class_weights: [0.25, 3.0, 1.0, 4.0]
+
+training:
+  epochs: 100
+  lr: 0.0001
+  weight_decay: 0.00001
+  warmup_epochs: 5
+  patience: 20
+  gradient_accumulation: 4
+  gradient_checkpointing: true  # Save ~30-50% GPU memory
+  # 不再需要无文本训练 (TextBraTS 文本质量高)
+  no_text_ratio: 0.0
+
+eval:
+  metrics: ["dice", "hd95"]
+
+# 实验记录
+experiment:
+  name: "TextMamba3D_TextBraTS"
+  description: "Text-guided 3D brain tumor segmentation with expert-annotated text (no leakage)"

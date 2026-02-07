@@ -4,6 +4,82 @@ import torch.nn as nn
 from .mamba_block import MambaLayer
 
 
+# ---------------------------------------------------------------------------
+# FiLM: Feature-wise Linear Modulation for multi-scale text guidance
+# ---------------------------------------------------------------------------
+
+class FiLMLayer(nn.Module):
+    """Feature-wise Linear Modulation: output = gamma * input + beta.
+
+    Predicts per-channel scale and shift from a conditioning vector,
+    then applies them to every spatial token.
+    """
+
+    def __init__(self, feat_dim: int, cond_dim: int):
+        super().__init__()
+        self.gamma_proj = nn.Linear(cond_dim, feat_dim)
+        self.beta_proj = nn.Linear(cond_dim, feat_dim)
+
+        # Initialize gamma close to 1 and beta close to 0
+        nn.init.ones_(self.gamma_proj.bias)
+        nn.init.zeros_(self.gamma_proj.weight)
+        nn.init.zeros_(self.beta_proj.bias)
+        nn.init.zeros_(self.beta_proj.weight)
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B, L, D] spatial feature tokens
+            cond: [B, D_cond] conditioning vector (text global feature)
+        Returns:
+            [B, L, D] modulated features
+        """
+        gamma = self.gamma_proj(cond).unsqueeze(1)  # [B, 1, D]
+        beta = self.beta_proj(cond).unsqueeze(1)     # [B, 1, D]
+        return gamma * x + beta
+
+
+class MultiScaleFiLM(nn.Module):
+    """Apply FiLM modulation at multiple encoder scales.
+
+    One FiLMLayer per encoder stage, conditioned on text global feature.
+    Modulates skip connections before they enter the decoder.
+    """
+
+    def __init__(self, stage_dims: list[int], text_dim: int):
+        """
+        Args:
+            stage_dims: Channel dimensions for each encoder stage, e.g. [96, 192, 384, 768]
+            text_dim: Dimension of text global feature
+        """
+        super().__init__()
+        self.film_layers = nn.ModuleList([
+            FiLMLayer(feat_dim=dim, cond_dim=text_dim)
+            for dim in stage_dims
+        ])
+
+    def forward(
+        self,
+        features: list[torch.Tensor],
+        text_global: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        """
+        Args:
+            features: List of encoder features [stage0, stage1, ..., stageN]
+            text_global: [B, D_text] text global feature
+        Returns:
+            List of FiLM-modulated features (same shapes)
+        """
+        return [
+            film(feat, text_global)
+            for film, feat in zip(self.film_layers, features)
+        ]
+
+
+# ---------------------------------------------------------------------------
+# MambaFusion: Deep bottleneck fusion via causal Mamba
+# ---------------------------------------------------------------------------
+
 class MambaFusion(nn.Module):
     """Fuse image and text features using Mamba.
 

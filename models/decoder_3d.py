@@ -1,8 +1,9 @@
 # models/decoder_3d.py
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange
-from .mamba_block import MambaLayer
+from .mamba_block import CrossScanBiMamba3DLayer
 
 
 class PatchExpanding3D(nn.Module):
@@ -46,9 +47,11 @@ class MambaDecoder3D(nn.Module):
         depths: list = [2, 2, 2, 2],
         d_state: int = 16,
         dropout: float = 0.0,
+        use_checkpoint: bool = False,
     ):
         super().__init__()
         self.num_stages = len(depths)
+        self.use_checkpoint = use_checkpoint
 
         # Calculate spatial dimensions
         d, h, w = img_size[0] // patch_size[0], \
@@ -62,11 +65,13 @@ class MambaDecoder3D(nn.Module):
         # Build decoder stages (reverse order)
         for i in range(len(depths) - 1, -1, -1):
             dim = embed_dim * (2 ** i)
+            spatial = (d // (2 ** i), h // (2 ** i), w // (2 ** i))
 
-            # Mamba stage
-            stage = MambaLayer(
+            # CrossScan BiMamba stage (6-direction 3D scanning)
+            stage = CrossScanBiMamba3DLayer(
                 dim=dim,
                 depth=depths[i],
+                spatial_dims=spatial,
                 d_state=d_state,
                 dropout=dropout,
             )
@@ -108,7 +113,10 @@ class MambaDecoder3D(nn.Module):
         x = features[-1]
 
         for i, stage in enumerate(self.stages):
-            x = stage(x)
+            if self.use_checkpoint and self.training:
+                x = checkpoint(stage, x, use_reentrant=False)
+            else:
+                x = stage(x)
 
             if i < len(self.upsamples):
                 x = self.upsamples[i](x)

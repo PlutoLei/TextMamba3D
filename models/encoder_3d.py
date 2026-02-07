@@ -1,8 +1,9 @@
 # models/encoder_3d.py
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange
-from .mamba_block import MambaLayer
+from .mamba_block import CrossScanBiMamba3DLayer
 
 
 class PatchEmbed3D(nn.Module):
@@ -94,10 +95,12 @@ class MambaEncoder3D(nn.Module):
         patch_size: tuple = (4, 4, 4),
         d_state: int = 16,
         dropout: float = 0.0,
+        use_checkpoint: bool = False,
     ):
         super().__init__()
         self.num_stages = len(depths)
         self.embed_dim = embed_dim
+        self.use_checkpoint = use_checkpoint
 
         # Patch embedding
         self.patch_embed = PatchEmbed3D(
@@ -116,11 +119,13 @@ class MambaEncoder3D(nn.Module):
         self.downsamples = nn.ModuleList()
 
         for i, depth in enumerate(depths):
-            # Mamba stage
+            # CrossScan BiMamba stage (6-direction 3D scanning)
             dim = embed_dim * (2 ** i)
-            stage = MambaLayer(
+            spatial = (d // (2 ** i), h // (2 ** i), w // (2 ** i))
+            stage = CrossScanBiMamba3DLayer(
                 dim=dim,
                 depth=depth,
+                spatial_dims=spatial,
                 d_state=d_state,
                 dropout=dropout,
             )
@@ -150,7 +155,10 @@ class MambaEncoder3D(nn.Module):
 
         features = []
         for i, stage in enumerate(self.stages):
-            x = stage(x)
+            if self.use_checkpoint and self.training:
+                x = checkpoint(stage, x, use_reentrant=False)
+            else:
+                x = stage(x)
             features.append(x)
 
             if i < len(self.downsamples):

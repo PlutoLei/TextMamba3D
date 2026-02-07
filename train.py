@@ -1,80 +1,158 @@
 # train.py
-import os
+"""Training script for TextMamba3D model."""
+
 import argparse
-import yaml
-import torch
-import torch.nn as nn
+import os
+from typing import Optional
+
 import numpy as np
+import torch
+import yaml
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from models import TextMamba3D
-from losses import CombinedLoss
+from transformers import AutoTokenizer
+
 from data import BraTSDataset, get_train_transforms, get_val_transforms
-from utils.metrics import dice_score
+from data.brats_textbrats_dataset import TextBraTSDataset
+from losses import CombinedLoss
+from models import TextMamba3D
+from models.text_encoder import TextMambaEncoder
+from utils.metrics import dice_score, dice_score_brats_regions
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train TextMamba3D')
     parser.add_argument('--config', type=str, default='configs/default.yaml')
     parser.add_argument('--resume', type=str, default=None)
+    parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision')
+    parser.add_argument('--no-text-ratio', type=float, default=0.1,
+                        help='Ratio of samples trained without text')
+    parser.add_argument('--grad-accum', type=int, default=4,
+                        help='Gradient accumulation steps (default: 4 for 8GB GPU)')
+    parser.add_argument('--max-samples', type=int, default=None,
+                        help='Limit training samples (e.g., 200 for quick training)')
     return parser.parse_args()
 
 
+class EarlyStopping:
+    """Early stopping when validation metric stops improving."""
+
+    def __init__(self, patience: int = 20, min_delta: float = 0.001, mode: str = 'max') -> None:
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.counter = 0
+        self.best_score: Optional[float] = None
+        self.early_stop = False
+
+    def __call__(self, score: float) -> bool:
+        if self.best_score is None:
+            self.best_score = score
+            return False
+
+        improved = (
+            score > self.best_score + self.min_delta
+            if self.mode == 'max'
+            else score < self.best_score - self.min_delta
+        )
+
+        if improved:
+            self.best_score = score
+            self.counter = 0
+        else:
+            self.counter += 1
+            self.early_stop = self.counter >= self.patience
+
+        return self.early_stop
+
+
 def load_config(path: str) -> dict:
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
-def train_epoch(model, loader, criterion, optimizer, device, epoch):
+def train_epoch(
+    model, loader, criterion, optimizer, device, epoch,
+    scaler=None, use_amp=True, no_text_ratio=0.1, grad_accum=1
+) -> float:
     model.train()
-    total_loss = 0
+    total_loss = 0.0
+    optimizer.zero_grad()
 
     pbar = tqdm(loader, desc=f'Epoch {epoch}')
-    for batch in pbar:
+    for batch_idx, batch in enumerate(pbar):
         image = batch['image'].to(device)
         mask = batch['mask'].to(device)
         text_ids = batch['text_ids'].to(device)
+        attn_mask = batch.get('attention_mask')
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(device)
+        use_text = np.random.random() > no_text_ratio
 
-        optimizer.zero_grad()
+        with autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp):
+            pred, img_feat, text_feat = model(
+                image,
+                text_ids if use_text else None,
+                attention_mask=attn_mask if use_text else None,
+                return_features=True,
+                use_text=use_text,
+            )
+            loss = criterion(pred, mask, img_feat, text_feat)['total']
+            loss = loss / grad_accum  # 梯度累积：损失除以累积步数
 
-        # Forward
-        pred, img_feat, text_feat = model(image, text_ids, return_features=True)
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
-        # Loss
-        losses = criterion(pred, mask, img_feat, text_feat)
-        loss = losses['total']
+        # 每 grad_accum 步更新一次参数
+        if (batch_idx + 1) % grad_accum == 0 or (batch_idx + 1) == len(loader):
+            if scaler is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+            optimizer.zero_grad()
 
-        # Backward
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        pbar.set_postfix({'loss': loss.item()})
+        total_loss += loss.item() * grad_accum
+        pbar.set_postfix({'loss': f'{loss.item() * grad_accum:.4f}', 'text': 'Y' if use_text else 'N'})
 
     return total_loss / len(loader)
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device):
+def validate(model, loader, criterion, device, use_amp=True, use_text=True) -> tuple[float, float]:
+    """Validate model with or without text guidance."""
     model.eval()
-    total_loss = 0
+    total_loss = 0.0
     all_dice = []
 
-    for batch in tqdm(loader, desc='Validating'):
+    desc = 'Validating' if use_text else 'Validating (no-text)'
+    for batch in tqdm(loader, desc=desc):
         image = batch['image'].to(device)
         mask = batch['mask'].to(device)
-        text_ids = batch['text_ids'].to(device)
+        text_ids = batch['text_ids'].to(device) if use_text else None
+        attn_mask = batch.get('attention_mask')
+        if use_text and attn_mask is not None:
+            attn_mask = attn_mask.to(device)
+        else:
+            attn_mask = None
 
-        pred, img_feat, text_feat = model(image, text_ids, return_features=True)
-        losses = criterion(pred, mask, img_feat, text_feat)
+        with autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp):
+            pred, img_feat, text_feat = model(
+                image, text_ids, attention_mask=attn_mask,
+                return_features=True, use_text=use_text
+            )
+            loss = criterion(pred, mask, img_feat, text_feat)['total']
 
-        total_loss += losses['total'].item()
-
-        # Dice score
-        dice = dice_score(pred, mask, num_classes=4)
-        all_dice.append(dice['dice_mean'])
+        total_loss += loss.item()
+        all_dice.append(dice_score_brats_regions(pred, mask)['dice_mean'])
 
     return total_loss / len(loader), np.mean(all_dice)
 
@@ -85,22 +163,71 @@ def main():
 
     # Device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    use_amp = not args.no_amp and device.type == 'cuda'
     print(f'Using device: {device}')
+    print(f'Mixed precision (AMP): {use_amp}')
+    print(f'No-text training ratio: {args.no_text_ratio}')
 
     # Data
     train_transform = get_train_transforms(tuple(config['data']['patch_size']))
     val_transform = get_val_transforms(tuple(config['data']['patch_size']))
 
-    train_dataset = BraTSDataset(
-        data_dir=config['data']['data_dir'],
-        split='train',
-        transform=train_transform,
-    )
-    val_dataset = BraTSDataset(
-        data_dir=config['data']['data_dir'],
-        split='val',
-        transform=val_transform,
-    )
+    # Initialize PubMedBERT tokenizer
+    use_pretrained_text = config['model'].get('use_pretrained_text', True)
+    tokenizer = None
+    if use_pretrained_text:
+        print(f"Loading PubMedBERT tokenizer: {TextMambaEncoder.PUBMEDBERT_NAME}")
+        tokenizer = AutoTokenizer.from_pretrained(TextMambaEncoder.PUBMEDBERT_NAME)
+
+    # 根据配置选择数据集类型
+    dataset_type = config['data'].get('dataset_type', 'brats2021')
+    max_text_len = config['model'].get('text_max_len', 128)
+
+    if dataset_type == 'textbrats':
+        # TextBraTS 数据集 (专家标注文本, 无信息泄露)
+        print("Using TextBraTS dataset (expert-annotated text)")
+        train_ratio = config['data'].get('train_ratio', 0.8)
+
+        train_dataset = TextBraTSDataset(
+            data_dir=config['data']['data_dir'],
+            split='train',
+            transform=train_transform,
+            tokenizer=tokenizer,
+            max_text_len=max_text_len,
+            train_ratio=train_ratio,
+        )
+        val_dataset = TextBraTSDataset(
+            data_dir=config['data']['data_dir'],
+            split='val',
+            transform=val_transform,
+            tokenizer=tokenizer,
+            max_text_len=max_text_len,
+            train_ratio=train_ratio,
+        )
+    else:
+        # 原始 BraTS2021 数据集 (自动生成文本)
+        print("Using BraTS2021 dataset (auto-generated text)")
+        train_dataset = BraTSDataset(
+            data_dir=config['data']['data_dir'],
+            split='train',
+            transform=train_transform,
+            tokenizer=tokenizer,
+            max_text_len=max_text_len,
+        )
+        val_dataset = BraTSDataset(
+            data_dir=config['data']['data_dir'],
+            split='val',
+            transform=val_transform,
+            tokenizer=tokenizer,
+            max_text_len=max_text_len,
+        )
+
+    # 限制训练样本数量（用于快速测试或显存不足）
+    if args.max_samples and args.max_samples < len(train_dataset):
+        from torch.utils.data import Subset
+        indices = list(range(args.max_samples))
+        train_dataset = Subset(train_dataset, indices)
+        print(f'Limited training to {args.max_samples} samples')
 
     train_loader = DataLoader(
         train_dataset,
@@ -117,7 +244,13 @@ def main():
         pin_memory=True,
     )
 
+    print(f'Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}')
+
     # Model
+    use_checkpoint = config['training'].get('gradient_checkpointing', False)
+    if use_checkpoint:
+        print('Gradient checkpointing: ENABLED (saves ~30-50% GPU memory)')
+
     model = TextMamba3D(
         img_size=tuple(config['model']['img_size']),
         in_channels=config['model']['in_channels'],
@@ -125,15 +258,28 @@ def main():
         embed_dim=config['model']['embed_dim'],
         depths=config['model']['depths'],
         text_embed_dim=config['model']['text_embed_dim'],
+        text_max_len=max_text_len,
+        use_pretrained_text=use_pretrained_text,
+        unfreeze_text_layers=config['model'].get('unfreeze_text_layers', 0),
+        use_checkpoint=use_checkpoint,
     ).to(device)
 
-    # Loss
+    # Count parameters
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Trainable parameters: {num_params:,}')
+
+    # Loss (with optional class weighting for BraTS imbalance)
+    from losses.dice_loss import BRATS_CLASS_WEIGHTS
+    class_weights = config['loss'].get('class_weights', BRATS_CLASS_WEIGHTS)
+    print(f'Class weights: {class_weights}')
+
     criterion = CombinedLoss(
         dice_weight=config['loss']['dice_weight'],
         ce_weight=config['loss']['ce_weight'],
         edge_weight=config['loss']['edge_weight'],
         contrastive_weight=config['loss']['contrastive_weight'],
         temperature=config['loss']['temperature'],
+        class_weights=class_weights,
     )
 
     # Optimizer
@@ -143,10 +289,29 @@ def main():
         weight_decay=config['training']['weight_decay'],
     )
 
-    # Scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    # Scheduler: Warmup + CosineAnnealing
+    warmup_epochs = config['training'].get('warmup_epochs', 5)
+    total_epochs = config['training']['epochs']
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
+    )
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_epochs - warmup_epochs
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer,
-        T_max=config['training']['epochs'],
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_epochs],
+    )
+
+    # AMP scaler
+    scaler = GradScaler() if use_amp else None
+
+    # Early stopping
+    early_stopping = EarlyStopping(
+        patience=config['training'].get('patience', 30),
+        min_delta=0.001,
+        mode='max'
     )
 
     # Tensorboard
@@ -154,46 +319,83 @@ def main():
 
     # Resume
     start_epoch = 0
+    best_dice = 0
+    best_dice_no_text = 0
+
     if args.resume:
-        checkpoint = torch.load(args.resume)
+        checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         start_epoch = checkpoint['epoch'] + 1
+        best_dice = checkpoint.get('best_dice', 0)
+        best_dice_no_text = checkpoint.get('best_dice_no_text', 0)
+        print(f'Resumed from epoch {start_epoch}')
 
     # Training loop
-    best_dice = 0
     for epoch in range(start_epoch, config['training']['epochs']):
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device, epoch)
-        val_loss, val_dice = validate(model, val_loader, criterion, device)
+        # Train
+        train_loss = train_epoch(
+            model, train_loader, criterion, optimizer, device, epoch,
+            scaler=scaler, use_amp=use_amp, no_text_ratio=args.no_text_ratio,
+            grad_accum=args.grad_accum
+        )
+
+        # Validate with text (standard mode)
+        val_loss, val_dice = validate(model, val_loader, criterion, device, use_amp=use_amp, use_text=True)
+
+        # Validate without text (fair evaluation mode)
+        val_loss_no_text, val_dice_no_text = validate(
+            model, val_loader, criterion, device, use_amp=use_amp, use_text=False
+        )
 
         scheduler.step()
 
         # Log
         writer.add_scalar('Loss/train', train_loss, epoch)
         writer.add_scalar('Loss/val', val_loss, epoch)
+        writer.add_scalar('Loss/val_no_text', val_loss_no_text, epoch)
         writer.add_scalar('Dice/val', val_dice, epoch)
+        writer.add_scalar('Dice/val_no_text', val_dice_no_text, epoch)
         writer.add_scalar('LR', scheduler.get_last_lr()[0], epoch)
 
-        print(f'Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, val_dice={val_dice:.4f}')
+        print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
+        print(f'  With text:    val_loss={val_loss:.4f}, val_dice={val_dice:.4f}')
+        print(f'  Without text: val_loss={val_loss_no_text:.4f}, val_dice={val_dice_no_text:.4f}')
 
-        # Save checkpoint
         os.makedirs('checkpoints', exist_ok=True)
 
-        if val_dice > best_dice:
-            best_dice = val_dice
-            torch.save({
+        def save_checkpoint(path: str, include_scheduler: bool = False) -> None:
+            state = {
                 'epoch': epoch,
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'best_dice': best_dice,
-            }, 'checkpoints/best.pth')
+                'best_dice_no_text': best_dice_no_text,
+            }
+            if include_scheduler:
+                state['scheduler'] = scheduler.state_dict()
+            torch.save(state, path)
 
-        torch.save({
-            'epoch': epoch,
-            'model': model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-        }, 'checkpoints/last.pth')
+        if val_dice_no_text > best_dice_no_text:
+            best_dice_no_text = val_dice_no_text
+            save_checkpoint('checkpoints/best_no_text.pth')
+            print(f'  -> New best (no-text): {best_dice_no_text:.4f}')
 
+        if val_dice > best_dice:
+            best_dice = val_dice
+            save_checkpoint('checkpoints/best.pth')
+            print(f'  -> New best (with-text): {best_dice:.4f}')
+
+        save_checkpoint('checkpoints/last.pth', include_scheduler=True)
+
+        # Early stopping (based on no-text dice)
+        if early_stopping(val_dice_no_text):
+            print(f'\nEarly stopping triggered at epoch {epoch}')
+            break
+
+    print(f'\nTraining complete!')
+    print(f'Best Dice (with text): {best_dice:.4f}')
+    print(f'Best Dice (no text):   {best_dice_no_text:.4f}')
     writer.close()
 
 

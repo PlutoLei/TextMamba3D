@@ -29,17 +29,26 @@ class EdgeLoss(nn.Module):
 
     def get_edge_mask(self, target: torch.Tensor) -> torch.Tensor:
         target_float = target.float().unsqueeze(1)
-        gx = F.conv3d(target_float, self.sobel_x, padding=1)
-        gy = F.conv3d(target_float, self.sobel_y, padding=1)
-        gz = F.conv3d(target_float, self.sobel_z, padding=1)
+        # 确保 Sobel 核与输入在同一设备和类型
+        sobel_x = self.sobel_x.to(target_float.device, target_float.dtype)
+        sobel_y = self.sobel_y.to(target_float.device, target_float.dtype)
+        sobel_z = self.sobel_z.to(target_float.device, target_float.dtype)
+
+        gx = F.conv3d(target_float, sobel_x, padding=1)
+        gy = F.conv3d(target_float, sobel_y, padding=1)
+        gz = F.conv3d(target_float, sobel_z, padding=1)
         edge = torch.sqrt(gx**2 + gy**2 + gz**2 + 1e-8)
         edge = edge / (edge.max() + 1e-8)
         return edge
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        edge_mask = self.get_edge_mask(target)
-        weight = 1 + self.edge_weight * edge_mask
-        weight = weight.squeeze(1)
-        loss = F.cross_entropy(pred, target, reduction='none')
-        weighted_loss = (loss * weight).mean()
-        return weighted_loss
+        """Return only the extra edge-weighted penalty (no base CE).
+
+        This avoids double-counting CE when used with CombinedLoss,
+        which already has a standalone CE term.
+        """
+        edge_mask = self.get_edge_mask(target)  # [B, 1, D, H, W]
+        edge_weight_map = self.edge_weight * edge_mask.squeeze(1)  # [B, D, H, W]
+        loss = F.cross_entropy(pred, target, reduction='none')  # [B, D, H, W]
+        edge_bonus = (loss * edge_weight_map).mean()
+        return edge_bonus

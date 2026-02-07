@@ -4,13 +4,38 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class DiceLoss(nn.Module):
-    """Dice loss for segmentation."""
+# BraTS default class weights (inverse frequency, clinically motivated)
+# Class 0 (background): excluded from Dice by default
+# Class 1 (necrotic/non-enhancing tumor core): rare, high weight
+# Class 2 (peritumoral edema): moderate frequency
+# Class 3 (GD-enhancing tumor): rarest, clinically most critical
+BRATS_CLASS_WEIGHTS = [0.25, 3.0, 1.0, 4.0]
 
-    def __init__(self, smooth: float = 1e-5, include_background: bool = False):
+
+class DiceLoss(nn.Module):
+    """Class-weighted Dice loss for segmentation.
+
+    Supports per-class weighting to handle class imbalance common in
+    medical segmentation (e.g., BraTS tumor subregions).
+    """
+
+    def __init__(
+        self,
+        smooth: float = 1e-5,
+        include_background: bool = False,
+        class_weights: list[float] | None = None,
+    ):
         super().__init__()
         self.smooth = smooth
         self.include_background = include_background
+
+        if class_weights is not None:
+            self.register_buffer(
+                'class_weights',
+                torch.tensor(class_weights, dtype=torch.float32),
+            )
+        else:
+            self.class_weights = None
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
@@ -28,6 +53,7 @@ class DiceLoss(nn.Module):
         start_idx = 0 if self.include_background else 1
 
         dice_scores = []
+        weights = []
         for i in range(start_idx, num_classes):
             pred_i = pred[:, i]
             target_i = target_onehot[:, i]
@@ -36,4 +62,13 @@ class DiceLoss(nn.Module):
             dice = (2 * intersection + self.smooth) / (union + self.smooth)
             dice_scores.append(dice)
 
-        return 1 - torch.stack(dice_scores).mean()
+            if self.class_weights is not None and i < len(self.class_weights):
+                weights.append(self.class_weights[i])
+            else:
+                weights.append(1.0)
+
+        dice_tensor = torch.stack(dice_scores)
+        weight_tensor = torch.tensor(weights, device=pred.device, dtype=pred.dtype)
+        weight_tensor = weight_tensor / weight_tensor.sum()  # Normalize
+
+        return 1 - (dice_tensor * weight_tensor).sum()

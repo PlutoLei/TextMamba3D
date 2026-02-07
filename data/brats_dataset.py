@@ -71,6 +71,10 @@ class BraTSDataset(Dataset):
         seg_path = os.path.join(case_dir, f'{case_name}_seg.nii.gz')
         mask = self._load_nifti(seg_path).astype(np.int64)
 
+        # BraTS 标签映射: 0->0, 1->1, 2->2, 4->3
+        # 原始标签: 0=背景, 1=坏死, 2=水肿, 4=强化
+        mask[mask == 4] = 3
+
         # Normalize image
         for i in range(image.shape[0]):
             img_i = image[i]
@@ -100,16 +104,19 @@ class BraTSDataset(Dataset):
                 return_tensors='pt',
             )
             text_ids = tokens['input_ids'].squeeze(0)
+            attention_mask = tokens['attention_mask'].squeeze(0)
         else:
             # Simple character-level tokenization as fallback
             text_ids = torch.zeros(self.max_text_len, dtype=torch.long)
             for i, c in enumerate(text[:self.max_text_len]):
                 text_ids[i] = ord(c) % 30000
+            attention_mask = (text_ids > 0).long()
 
         return {
             'image': image,
             'mask': mask,
             'text': text,
             'text_ids': text_ids,
+            'attention_mask': attention_mask,
             'case_name': case_name,
         }

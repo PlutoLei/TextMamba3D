@@ -2,8 +2,14 @@
 data:
   data_dir: "./data/BraTS2021"
   patch_size: [96, 96, 96]
-  batch_size: 2
-  num_workers: 4
+  batch_size: 1           # 8GB 显存推荐
+  num_workers: 2          # 减少内存占用
+
+training_tips:
+  # 8GB 显存优化配置
+  # - batch_size=1 + AMP + 梯度累积 4 步 ≈ 有效 batch_size=4
+  # - 如果 OOM，将 patch_size 改为 [64, 64, 64]
+  gradient_accumulation: 4
 
 model:
   img_size: [96, 96, 96]
@@ -11,22 +17,29 @@ model:
   out_channels: 4  # background, necrotic, edema, enhancing
   embed_dim: 96
   depths: [2, 2, 2, 2]
-  num_heads: [3, 6, 12, 24]
   text_embed_dim: 256
   text_max_len: 128
+  use_pretrained_text: true    # Use PubMedBERT pretrained text encoder
+  unfreeze_text_layers: 0      # Number of BERT layers to unfreeze (0=all frozen)
 
 loss:
   dice_weight: 1.0
   ce_weight: 1.0
   edge_weight: 1.0
-  contrastive_weight: 0.5
+  contrastive_weight: 0.0   # batch_size=1 时对比学习无效，需 batch>1 才启用
   temperature: 0.07
+  # BraTS class weights (inverse frequency): [background, necrotic, edema, enhancing]
+  # Enhancing tumor (class 3) is rarest and clinically most important
+  class_weights: [0.25, 3.0, 1.0, 4.0]
 
 training:
-  epochs: 300
-  lr: 1e-4
-  weight_decay: 1e-5
-  warmup_epochs: 10
+  epochs: 100         # 减少 epochs，配合 --max-samples 使用
+  lr: 0.0001          # 1e-4
+  weight_decay: 0.00001  # 1e-5
+  warmup_epochs: 5    # 减少 warmup
+  patience: 20        # Early stopping patience
+  no_text_ratio: 0.1  # Ratio of samples trained without text
+  gradient_checkpointing: true  # Save ~30-50% GPU memory (trades compute for memory)
 
 eval:
   metrics: ["dice", "hd95", "assd"]
