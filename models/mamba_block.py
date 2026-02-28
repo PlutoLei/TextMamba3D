@@ -102,6 +102,7 @@ class BiMambaBlock(nn.Module):
         self.forward_ssm = _create_ssm(dim, d_state, d_conv, expand, dropout)
         self.backward_ssm = _create_ssm(dim, d_state, d_conv, expand, dropout)
         self.merge = nn.Linear(dim * 2, dim)
+        self.gelu = nn.GELU()
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -117,6 +118,7 @@ class BiMambaBlock(nn.Module):
 
         # Merge forward + backward
         x = self.merge(torch.cat([x_fwd, x_bwd], dim=-1))
+        x = self.gelu(x)
         x = self.dropout(x)
         return x + residual
 
@@ -185,6 +187,7 @@ class CrossScanBiMamba3DBlock(nn.Module):
 
         # Merge 6 directions -> dim
         self.merge = nn.Linear(dim * 6, dim)
+        self.gelu = nn.GELU()
         self.dropout = nn.Dropout(dropout)
 
     def _reorder(self, x: torch.Tensor, src: str, dst: str) -> torch.Tensor:
@@ -219,6 +222,7 @@ class CrossScanBiMamba3DBlock(nn.Module):
             out_wdh_f, out_wdh_b,
         ], dim=-1)
         x = self.merge(merged)
+        x = self.gelu(x)
         x = self.dropout(x)
         return x + residual
 

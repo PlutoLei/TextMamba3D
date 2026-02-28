@@ -20,8 +20,12 @@ class FiLMLayer(nn.Module):
         self.gamma_proj = nn.Linear(cond_dim, feat_dim)
         self.beta_proj = nn.Linear(cond_dim, feat_dim)
 
-        # Initialize gamma close to 1 and beta close to 0
-        nn.init.ones_(self.gamma_proj.bias)
+        # Bounded gating: gamma = 2*sigmoid(raw), so gamma in (0, 2).
+        # At init: raw=0 => 2*sigmoid(0)=1.0 => identity.
+        # NOTE: Incompatible with checkpoints trained with unbounded gamma
+        # (old init: bias=1, weight=0). Old checkpoints load silently but
+        # produce different outputs.
+        nn.init.zeros_(self.gamma_proj.bias)
         nn.init.zeros_(self.gamma_proj.weight)
         nn.init.zeros_(self.beta_proj.bias)
         nn.init.zeros_(self.beta_proj.weight)
@@ -34,8 +38,9 @@ class FiLMLayer(nn.Module):
         Returns:
             [B, L, D] modulated features
         """
-        gamma = self.gamma_proj(cond).unsqueeze(1)  # [B, 1, D]
-        beta = self.beta_proj(cond).unsqueeze(1)     # [B, 1, D]
+        raw_gamma = self.gamma_proj(cond).unsqueeze(1)   # [B, 1, D]
+        gamma = 2.0 * torch.sigmoid(raw_gamma)            # bounded (0, 2)
+        beta = self.beta_proj(cond).unsqueeze(1)           # [B, 1, D]
         return gamma * x + beta
 
 
