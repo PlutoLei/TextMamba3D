@@ -11,6 +11,7 @@ class CombinedLoss(nn.Module):
     """Combined loss for TextMamba3D.
 
     Supports class-weighted Dice and CE to handle BraTS class imbalance.
+    Skips expensive computation when a loss weight is zero.
     """
 
     def __init__(
@@ -41,17 +42,26 @@ class CombinedLoss(nn.Module):
         else:
             self.ce_class_weights = None
 
+    def _zero(self, pred: torch.Tensor) -> torch.Tensor:
+        """Return a zero scalar on the same device as pred."""
+        return pred.new_zeros(())
+
     def forward(self, pred, target, img_feat=None, text_feat=None) -> dict:
         losses = {}
-        losses['dice'] = self.dice_loss(pred, target)
-        losses['ce'] = F.cross_entropy(
-            pred, target, weight=self.ce_class_weights,
+
+        # Only compute losses with nonzero weights
+        losses['dice'] = self.dice_loss(pred, target) if self.dice_weight else self._zero(pred)
+        losses['ce'] = (
+            F.cross_entropy(pred, target, weight=self.ce_class_weights)
+            if self.ce_weight else self._zero(pred)
         )
-        losses['edge'] = self.edge_loss(pred, target)
-        if img_feat is not None and text_feat is not None:
+        losses['edge'] = self.edge_loss(pred, target) if self.edge_weight else self._zero(pred)
+
+        if self.contrastive_weight and img_feat is not None and text_feat is not None:
             losses['contrastive'] = self.contrastive_loss(img_feat, text_feat)
         else:
-            losses['contrastive'] = torch.tensor(0.0, device=pred.device)
+            losses['contrastive'] = self._zero(pred)
+
         losses['total'] = (
             self.dice_weight * losses['dice'] +
             self.ce_weight * losses['ce'] +

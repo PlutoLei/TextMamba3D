@@ -169,10 +169,13 @@ class RandIntensityShift:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if np.random.random() < self.prob:
             C = image.shape[0]
-            for c in range(C):
-                shift = np.random.uniform(-self.shift_range, self.shift_range)
-                scale = 1.0 + np.random.uniform(-self.scale_range, self.scale_range)
-                image[c] = image[c] * scale + shift
+            shift = torch.from_numpy(
+                np.random.uniform(-self.shift_range, self.shift_range, size=C).astype(np.float32)
+            ).view(C, 1, 1, 1)
+            scale = 1.0 + torch.from_numpy(
+                np.random.uniform(-self.scale_range, self.scale_range, size=C).astype(np.float32)
+            ).view(C, 1, 1, 1)
+            image = image * scale + shift
         return image, mask
 
 

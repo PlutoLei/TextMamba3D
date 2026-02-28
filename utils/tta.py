@@ -21,11 +21,12 @@ def tta_predict(
     use_text: bool = True,
     num_flips: int = 8,
 ) -> torch.Tensor:
-    """Test-time augmentation: average softmax predictions over flipped inputs.
+    """Test-time augmentation: average predictions over flipped inputs.
 
-    Flips the input image along spatial axes, runs forward pass for each
-    augmented version, flips predictions back, and averages the softmax
-    probabilities for a more robust prediction.
+    Averages logits across augmentations for mathematically correct aggregation,
+    then applies softmax to return probability maps.
+
+    Attempts batched forward pass for speed; falls back to sequential on OOM.
 
     Args:
         model: The segmentation model (expects [B, C, D, H, W] input).
@@ -45,21 +46,67 @@ def tta_predict(
     else:
         raise ValueError(f"num_flips must be 4 or 8, got {num_flips}")
 
+    try:
+        return _tta_batched(model, image, text_ids, attention_mask, use_text, flip_axes)
+    except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        return _tta_sequential(model, image, text_ids, attention_mask, use_text, flip_axes)
+
+
+def _tta_batched(model, image, text_ids, attention_mask, use_text, flip_axes):
+    """Batched TTA: stack all augmentations into one forward pass."""
+    N = len(flip_axes)
+    B = image.shape[0]
+
+    # Create all augmented images
+    aug_images = []
+    for axes in flip_axes:
+        img_aug = image
+        for ax in axes:
+            img_aug = torch.flip(img_aug, [ax])
+        aug_images.append(img_aug)
+
+    # Stack: [N*B, C, D, H, W]
+    batched = torch.cat(aug_images, dim=0)
+
+    # Replicate text tensors to match batch size
+    batched_text_ids = None
+    batched_attn_mask = None
+    if text_ids is not None:
+        batched_text_ids = text_ids.repeat(N, *([1] * (text_ids.dim() - 1)))
+    if attention_mask is not None:
+        batched_attn_mask = attention_mask.repeat(N, *([1] * (attention_mask.dim() - 1)))
+
+    # Single forward pass
+    all_logits = model(
+        batched, batched_text_ids,
+        attention_mask=batched_attn_mask, use_text=use_text,
+    )
+
+    # Split back and unflip
+    logit_chunks = all_logits.split(B, dim=0)
+    accum = torch.zeros_like(logit_chunks[0])
+    for logits, axes in zip(logit_chunks, flip_axes):
+        for ax in axes:
+            logits = torch.flip(logits, [ax])
+        accum += logits
+
+    return F.softmax(accum / N, dim=1)
+
+
+def _tta_sequential(model, image, text_ids, attention_mask, use_text, flip_axes):
+    """Sequential TTA fallback for low-memory environments."""
     accum = None
     for axes in flip_axes:
-        # Flip input
         img_aug = image
         for ax in axes:
             img_aug = torch.flip(img_aug, [ax])
 
-        # Forward pass
         logits = model(img_aug, text_ids, attention_mask=attention_mask, use_text=use_text)
 
-        # Flip prediction back
         for ax in axes:
             logits = torch.flip(logits, [ax])
 
-        probs = F.softmax(logits, dim=1)
-        accum = probs if accum is None else accum + probs
+        accum = logits if accum is None else accum + logits
 
-    return accum / len(flip_axes)
+    return F.softmax(accum / len(flip_axes), dim=1)

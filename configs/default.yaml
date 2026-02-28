@@ -3,7 +3,7 @@ data:
   data_dir: "./data/BraTS2021"
   patch_size: [96, 96, 96]
   batch_size: 1           # 8GB 显存推荐
-  num_workers: 2          # 减少内存占用
+  num_workers: 0          # Windows 必须为 0（spawn 多进程极慢）
 
 augmentation:
   use_elastic: false

@@ -26,9 +26,8 @@ class PatchExpanding3D(nn.Module):
         D, H, W = self.spatial_dims
 
         x = self.expand(x)  # [B, L, 8*out_dim]
-        x = rearrange(x, 'b (d h w) (p1 p2 p3 c) -> b (d p1) (h p2) (w p3) c',
+        x = rearrange(x, 'b (d h w) (p1 p2 p3 c) -> b (d p1 h p2 w p3) c',
                      d=D, h=H, w=W, p1=2, p2=2, p3=2)
-        x = rearrange(x, 'b d h w c -> b (d h w) c')
         x = self.norm(x)
 
         return x
