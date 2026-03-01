@@ -1,6 +1,7 @@
 # models/encoder_3d.py
 import torch
 import torch.nn as nn
+from math import prod
 from einops import rearrange
 from .mamba_block import CrossScanBiMamba3DLayer
 
@@ -40,6 +41,50 @@ class PatchEmbed3D(nn.Module):
         x = rearrange(x, 'b c d h w -> b (d h w) c')
         x = self.norm(x)
         return x
+
+
+class ModalityGroupPatchEmbed3D(nn.Module):
+    """Physics-based modality grouping for BraTS 4-channel input.
+
+    Splits 4 MRI channels into physics-based groups:
+      - Group A: T1 + T1ce (anatomical structure, high SNR)
+      - Group B: T2 + FLAIR (lesion signal, edema-sensitive)
+    Each group gets independent patch embedding, then merged.
+    Validated by CKD-TransBTS (physics-aware grouping > naive concatenation).
+    """
+
+    def __init__(
+        self,
+        img_size: tuple = (96, 96, 96),
+        patch_size: tuple = (4, 4, 4),
+        in_channels: int = 4,
+        embed_dim: int = 96,
+    ):
+        super().__init__()
+        assert in_channels == 4, f"ModalityGroupPatchEmbed3D requires 4 channels, got {in_channels}"
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.num_patches = prod(s // p for s, p in zip(img_size, patch_size))
+
+        # Group A: T1 + T1ce (channels 0-1)
+        self.group_a = nn.Conv3d(2, embed_dim, kernel_size=patch_size, stride=patch_size)
+        # Group B: T2 + FLAIR (channels 2-3)
+        self.group_b = nn.Conv3d(2, embed_dim, kernel_size=patch_size, stride=patch_size)
+        # Merge two groups
+        self.merge = nn.Linear(embed_dim * 2, embed_dim)
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B, 4, D, H, W]
+        Returns:
+            [B, num_patches, embed_dim]
+        """
+        a = rearrange(self.group_a(x[:, :2]), 'b c d h w -> b (d h w) c')
+        b = rearrange(self.group_b(x[:, 2:]), 'b c d h w -> b (d h w) c')
+        x = self.merge(torch.cat([a, b], dim=-1))
+        return self.norm(x)
 
 
 class PatchMerging3D(nn.Module):
@@ -100,13 +145,21 @@ class MambaEncoder3D(nn.Module):
         self.num_stages = len(depths)
         self.embed_dim = embed_dim
 
-        # Patch embedding
-        self.patch_embed = PatchEmbed3D(
-            img_size=img_size,
-            patch_size=patch_size,
-            in_channels=in_channels,
-            embed_dim=embed_dim,
-        )
+        # Patch embedding (modality grouping for BraTS 4-channel input)
+        if in_channels == 4:
+            self.patch_embed = ModalityGroupPatchEmbed3D(
+                img_size=img_size,
+                patch_size=patch_size,
+                in_channels=in_channels,
+                embed_dim=embed_dim,
+            )
+        else:
+            self.patch_embed = PatchEmbed3D(
+                img_size=img_size,
+                patch_size=patch_size,
+                in_channels=in_channels,
+                embed_dim=embed_dim,
+            )
 
         # Calculate spatial dimensions at each stage
         d, h, w = img_size[0] // patch_size[0], \

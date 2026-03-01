@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from einops import rearrange
+import torch.nn.functional as F
 
 try:
     from mamba_ssm import Mamba
@@ -177,6 +178,9 @@ class CrossScanBiMamba3DBlock(nn.Module):
         self.spatial_dims = spatial_dims  # (D, H, W) at this stage
         self.norm = nn.LayerNorm(dim)
 
+        # 3D depthwise conv for local spatial inductive bias (UlikeMamba)
+        self.dwconv = nn.Conv3d(dim, dim, kernel_size=3, padding=1, groups=dim, bias=False)
+
         # One BiMamba per axis ordering (each does fwd + bwd = 2 directions)
         self.dhw_fwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
         self.dhw_bwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
@@ -190,6 +194,13 @@ class CrossScanBiMamba3DBlock(nn.Module):
         self.gelu = nn.GELU()
         self.dropout = nn.Dropout(dropout)
 
+        # Multi-scale: 2x downsampled bidirectional scan (Multi-Scale VMamba)
+        self.use_multiscale = all(s >= 4 for s in spatial_dims)
+        if self.use_multiscale:
+            self.ms_fwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
+            self.ms_bwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
+            self.ms_weight = nn.Parameter(torch.full((1,), -5.0))
+
     def _reorder(self, x: torch.Tensor, src: str, dst: str) -> torch.Tensor:
         """Reorder flattened spatial tokens between different axis orderings."""
         D, H, W = self.spatial_dims
@@ -200,6 +211,11 @@ class CrossScanBiMamba3DBlock(nn.Module):
         residual = x
         x = self.norm(x)
         D, H, W = self.spatial_dims
+
+        # DWConv: local 3x3x3 spatial features
+        x_3d = rearrange(x, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
+        x = x + rearrange(self.dwconv(x_3d), 'b c d h w -> b (d h w) c')
+        x_enhanced = x  # save for multi-scale branch
 
         # Scan 1: D-H-W ordering (native)
         out_dhw_f = self.dhw_fwd(x)
@@ -224,6 +240,22 @@ class CrossScanBiMamba3DBlock(nn.Module):
         x = self.merge(merged)
         x = self.gelu(x)
         x = self.dropout(x)
+
+        # Multi-scale branch: 2x downsampled bidirectional scan
+        if self.use_multiscale:
+            D2, H2, W2 = D // 2, H // 2, W // 2
+            x_ms = rearrange(x_enhanced, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
+            x_ms = F.adaptive_avg_pool3d(x_ms, (D2, H2, W2))
+            x_ms = rearrange(x_ms, 'b c d h w -> b (d h w) c')
+            ms_f = self.ms_fwd(x_ms)
+            ms_b = self.ms_bwd(x_ms.flip(1)).flip(1)
+            x_ms = (ms_f + ms_b) / 2
+            x_ms = rearrange(x_ms, 'b (d h w) c -> b c d h w', d=D2, h=H2, w=W2)
+            x_ms = F.interpolate(x_ms, size=(D, H, W), mode='trilinear', align_corners=False)
+            x_ms = rearrange(x_ms, 'b c d h w -> b (d h w) c')
+            alpha = torch.sigmoid(self.ms_weight)
+            x = (1 - alpha) * x + alpha * x_ms
+
         return x + residual
 
 
