@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from .decoder_3d import MambaDecoder3D
 from .encoder_3d import MambaEncoder3D
-from .fusion import MambaFusion, MultiScaleFiLM
+from .fusion import MambaFusion, MultiScaleFiLM, MultiScalePixelTextAttention
 from .text_encoder import TextMambaEncoder
 
 
@@ -89,6 +89,13 @@ class TextMamba3D(nn.Module):
             text_dim=text_embed_dim,
         )
 
+        # Pixel-level text cross-attention (DenseCLIP-inspired)
+        self.pixel_text_attn = MultiScalePixelTextAttention(
+            stage_dims=stage_dims,
+            text_dim=text_embed_dim,
+            num_heads=4,
+        )
+
         self.img_proj = nn.Sequential(
             nn.Linear(bottleneck_dim, text_embed_dim),
             nn.LayerNorm(text_embed_dim),
@@ -140,6 +147,10 @@ class TextMamba3D(nn.Module):
 
         # Multi-scale FiLM: modulate ALL encoder features with text
         filmed_features = self.multi_scale_film(img_features, text_global)
+
+        # Pixel-level text cross-attention on FiLM-modulated features
+        text_mask = attention_mask if has_text else None
+        filmed_features = self.pixel_text_attn(filmed_features, text_features, text_mask)
 
         # Deep bottleneck fusion (causal Mamba)
         fused_bottleneck = self.fusion(filmed_features[-1], text_features)

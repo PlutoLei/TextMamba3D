@@ -201,6 +201,16 @@ class CrossScanBiMamba3DBlock(nn.Module):
             self.ms_bwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
             self.ms_weight = nn.Parameter(torch.full((1,), -5.0))
 
+        # Uncertainty-aware feature gating (UD-Mamba inspired)
+        # At init: bias=0 => 2*sigmoid(0)=1.0 => identity-preserving
+        self.uncertainty_head = nn.Sequential(
+            nn.Linear(dim, dim // 4),
+            nn.GELU(),
+            nn.Linear(dim // 4, 1),
+        )
+        nn.init.zeros_(self.uncertainty_head[-1].weight)
+        nn.init.zeros_(self.uncertainty_head[-1].bias)
+
     def _reorder(self, x: torch.Tensor, src: str, dst: str) -> torch.Tensor:
         """Reorder flattened spatial tokens between different axis orderings."""
         D, H, W = self.spatial_dims
@@ -239,6 +249,11 @@ class CrossScanBiMamba3DBlock(nn.Module):
         ], dim=-1)
         x = self.merge(merged)
         x = self.gelu(x)
+
+        # Uncertainty gating: 2*sigmoid range (0, 2), identity-preserving at init
+        unc_gate = 2.0 * torch.sigmoid(self.uncertainty_head(x))  # [B, L, 1]
+        x = x * unc_gate
+
         x = self.dropout(x)
 
         # Multi-scale branch: 2x downsampled bidirectional scan

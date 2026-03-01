@@ -82,6 +82,93 @@ class MultiScaleFiLM(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Pixel-Level Text Cross-Attention (DenseCLIP-inspired)
+# ---------------------------------------------------------------------------
+
+class PixelTextCrossAttention(nn.Module):
+    """Pixel-level text guidance via cross-attention.
+
+    Q = image spatial tokens, K/V = text tokens.
+    Zero-init out_proj for identity-preserving start.
+    """
+
+    def __init__(self, feat_dim: int, text_dim: int, num_heads: int = 4):
+        super().__init__()
+        assert feat_dim % num_heads == 0, \
+            f"feat_dim ({feat_dim}) must be divisible by num_heads ({num_heads})"
+        self.num_heads = num_heads
+        self.head_dim = feat_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.q_proj = nn.Linear(feat_dim, feat_dim)
+        self.k_proj = nn.Linear(text_dim, feat_dim)
+        self.v_proj = nn.Linear(text_dim, feat_dim)
+        self.out_proj = nn.Linear(feat_dim, feat_dim)
+        self.norm = nn.LayerNorm(feat_dim)
+
+        # Zero-init output projection for identity start
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        text_feat: torch.Tensor,
+        text_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            x: [B, N, D] spatial feature tokens
+            text_feat: [B, M, D_text] text token features
+            text_mask: [B, M] optional mask (1=valid, 0=pad)
+        Returns:
+            [B, N, D] text-attended features
+        """
+        B, N, D = x.shape
+        H, hd = self.num_heads, self.head_dim
+        residual = x
+        x = self.norm(x)
+
+        q = self.q_proj(x).reshape(B, N, H, hd).transpose(1, 2)
+        k = self.k_proj(text_feat).reshape(B, -1, H, hd).transpose(1, 2)
+        v = self.v_proj(text_feat).reshape(B, -1, H, hd).transpose(1, 2)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, H, N, M]
+
+        if text_mask is not None:
+            mask = text_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, M]
+            attn = attn.masked_fill(mask == 0, float('-inf'))
+
+        attn = attn.softmax(dim=-1)
+        attn = torch.nan_to_num(attn)  # guard against all-masked rows
+        out = (attn @ v).transpose(1, 2).reshape(B, N, D)
+
+        return residual + self.out_proj(out)
+
+
+class MultiScalePixelTextAttention(nn.Module):
+    """Apply pixel-text cross-attention at multiple encoder scales."""
+
+    def __init__(self, stage_dims: list[int], text_dim: int, num_heads: int = 4):
+        super().__init__()
+        self.attn_layers = nn.ModuleList([
+            PixelTextCrossAttention(dim, text_dim, num_heads=num_heads)
+            for dim in stage_dims
+        ])
+
+    def forward(
+        self,
+        features: list[torch.Tensor],
+        text_feat: torch.Tensor,
+        text_mask: torch.Tensor | None = None,
+    ) -> list[torch.Tensor]:
+        return [
+            attn(feat, text_feat, text_mask)
+            for attn, feat in zip(self.attn_layers, features)
+        ]
+
+
+# ---------------------------------------------------------------------------
 # MambaFusion: Deep bottleneck fusion via causal Mamba
 # ---------------------------------------------------------------------------
 
