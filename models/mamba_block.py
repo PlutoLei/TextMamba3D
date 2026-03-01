@@ -225,7 +225,6 @@ class CrossScanBiMamba3DBlock(nn.Module):
         # DWConv: local 3x3x3 spatial features
         x_3d = rearrange(x, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
         x = x + rearrange(self.dwconv(x_3d), 'b c d h w -> b (d h w) c')
-        x_enhanced = x  # save for multi-scale branch
 
         # Scan 1: D-H-W ordering (native)
         out_dhw_f = self.dhw_fwd(x)
@@ -259,7 +258,7 @@ class CrossScanBiMamba3DBlock(nn.Module):
         # Multi-scale branch: 2x downsampled bidirectional scan
         if self.use_multiscale:
             D2, H2, W2 = D // 2, H // 2, W // 2
-            x_ms = rearrange(x_enhanced, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
+            x_ms = rearrange(x, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
             x_ms = F.adaptive_avg_pool3d(x_ms, (D2, H2, W2))
             x_ms = rearrange(x_ms, 'b c d h w -> b (d h w) c')
             ms_f = self.ms_fwd(x_ms)
