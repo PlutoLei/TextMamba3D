@@ -21,7 +21,7 @@ class DiceLoss(nn.Module):
 
     def __init__(
         self,
-        smooth: float = 1e-5,
+        smooth: float = 1e-4,
         include_background: bool = False,
         class_weights: list[float] | None = None,
     ):
@@ -57,18 +57,25 @@ class DiceLoss(nn.Module):
         for i in range(start_idx, num_classes):
             pred_i = pred[:, i]
             target_i = target_onehot[:, i]
-            intersection = (pred_i * target_i).sum()
-            union = pred_i.sum() + target_i.sum()
-            dice = (2 * intersection + self.smooth) / (union + self.smooth)
-            dice_scores.append(dice)
-
-            if self.class_weights is not None and i < len(self.class_weights):
-                weights.append(self.class_weights[i])
+            if target_i.sum().item() < 1e-6:
+                dice_scores.append(pred.new_tensor(1.0))
+                weights.append(pred.new_zeros(()))
             else:
-                weights.append(1.0)
+                intersection = (pred_i * target_i).sum()
+                union = pred_i.sum() + target_i.sum()
+                dice = (2 * intersection + self.smooth) / (union + self.smooth)
+                dice_scores.append(dice)
+
+                if self.class_weights is not None and i < len(self.class_weights):
+                    weights.append(self.class_weights[i].to(device=pred.device, dtype=pred.dtype))
+                else:
+                    weights.append(pred.new_ones(()))
 
         dice_tensor = torch.stack(dice_scores)
-        weight_tensor = torch.tensor(weights, device=pred.device, dtype=pred.dtype)
-        weight_tensor = weight_tensor / weight_tensor.sum()  # Normalize
+        weight_tensor = torch.stack(weights)
+        weight_sum = weight_tensor.sum()
+        if weight_sum.item() < 1e-8:
+            return pred.new_zeros(())
+        weight_tensor = weight_tensor / weight_sum  # Normalize
 
         return 1 - (dice_tensor * weight_tensor).sum()

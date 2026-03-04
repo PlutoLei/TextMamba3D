@@ -7,9 +7,8 @@ import torch.nn.functional as F
 class EdgeLoss(nn.Module):
     """Edge-enhanced loss for sharper boundaries."""
 
-    def __init__(self, edge_weight: float = 2.0):
+    def __init__(self):
         super().__init__()
-        self.edge_weight = edge_weight
         self.register_buffer('sobel_x', self._create_sobel_kernel(0))
         self.register_buffer('sobel_y', self._create_sobel_kernel(1))
         self.register_buffer('sobel_z', self._create_sobel_kernel(2))
@@ -33,8 +32,8 @@ class EdgeLoss(nn.Module):
         gx = F.conv3d(target_float, self.sobel_x, padding=1)
         gy = F.conv3d(target_float, self.sobel_y, padding=1)
         gz = F.conv3d(target_float, self.sobel_z, padding=1)
-        edge = torch.sqrt(gx**2 + gy**2 + gz**2 + 1e-8)
-        edge = edge / (edge.max() + 1e-8)
+        edge = torch.sqrt(torch.clamp_min(gx**2 + gy**2 + gz**2, 0.0))
+        edge = edge / torch.clamp_min(edge.amax(dim=(-3, -2, -1), keepdim=True), 1e-4)
         return edge
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -44,7 +43,7 @@ class EdgeLoss(nn.Module):
         which already has a standalone CE term.
         """
         edge_mask = self.get_edge_mask(target)  # [B, 1, D, H, W]
-        edge_weight_map = self.edge_weight * edge_mask.squeeze(1)  # [B, D, H, W]
+        edge_weight_map = edge_mask.squeeze(1)  # [B, D, H, W]
         loss = F.cross_entropy(pred, target, reduction='none')  # [B, D, H, W]
         edge_bonus = (loss * edge_weight_map).mean()
         return edge_bonus

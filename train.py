@@ -81,6 +81,7 @@ def train_epoch(
 ) -> float:
     model.train()
     total_loss = 0.0
+    nan_count = 0
     optimizer.zero_grad()
 
     pbar = tqdm(loader, desc=f'Epoch {epoch}')
@@ -116,6 +117,16 @@ def train_epoch(
             loss = criterion(pred, mask, img_feat, text_feat, aux_preds=aux_preds)['total']
             loss = loss / grad_accum  # 梯度累积：损失除以累积步数
 
+        if torch.isnan(loss).any().item() or torch.isinf(loss).any().item():
+            nan_count += 1
+            print(
+                f'[NaN/Inf] epoch={epoch}, batch_idx={batch_idx}, use_text={use_text}. '
+                'Skip batch and clear accumulated gradients.'
+            )
+            optimizer.zero_grad()
+            pbar.set_postfix({'loss': 'NaN/Inf', 'text': 'Y' if use_text else 'N'})
+            continue
+
         if scaler is not None:
             scaler.scale(loss).backward()
         else:
@@ -136,6 +147,7 @@ def train_epoch(
         total_loss += loss.item() * grad_accum
         pbar.set_postfix({'loss': f'{loss.item() * grad_accum:.4f}', 'text': 'Y' if use_text else 'N'})
 
+    print(f'Epoch {epoch}: NaN/Inf skipped batches={nan_count}')
     return total_loss / len(loader)
 
 
@@ -332,7 +344,7 @@ def main():
     )
 
     # AMP scaler
-    scaler = GradScaler() if use_amp else None
+    scaler = GradScaler(init_scale=2**14, growth_interval=2000) if use_amp else None
 
     # Early stopping
     early_stopping = EarlyStopping(
@@ -353,6 +365,10 @@ def main():
         checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
+        if 'scheduler' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler'])
+        if scaler is not None and checkpoint.get('scaler') is not None:
+            scaler.load_state_dict(checkpoint['scaler'])
         start_epoch = checkpoint['epoch'] + 1
         best_dice = checkpoint.get('best_dice', 0)
         best_dice_no_text = checkpoint.get('best_dice_no_text', 0)
@@ -394,16 +410,16 @@ def main():
 
         os.makedirs('checkpoints', exist_ok=True)
 
-        def save_checkpoint(path: str, include_scheduler: bool = False) -> None:
+        def save_checkpoint(path: str) -> None:
             state = {
                 'epoch': epoch,
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
                 'best_dice': best_dice,
                 'best_dice_no_text': best_dice_no_text,
+                'scaler': scaler.state_dict() if scaler is not None else None,
             }
-            if include_scheduler:
-                state['scheduler'] = scheduler.state_dict()
             torch.save(state, path)
 
         if val_dice_no_text > best_dice_no_text:
@@ -416,7 +432,7 @@ def main():
             save_checkpoint('checkpoints/best.pth')
             print(f'  -> New best (with-text): {best_dice:.4f}')
 
-        save_checkpoint('checkpoints/last.pth', include_scheduler=True)
+        save_checkpoint('checkpoints/last.pth')
 
         # Early stopping (based on best of both modes)
         if early_stopping(max(val_dice, val_dice_no_text)):
