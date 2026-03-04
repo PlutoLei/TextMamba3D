@@ -6,57 +6,56 @@
 ![License](https://img.shields.io/badge/License-Apache_2.0-green)
 ![Tests](https://img.shields.io/badge/Tests-214_passed-brightgreen)
 
-**基于统一 Mamba 架构的文本引导 3D 脑肿瘤分割框架。** O(n) 序列复杂度，~46M 可训练参数。利用临床诊断文本引导 MRI 体积分割，在 BraTS 脑肿瘤数据集上实现文本驱动的精准分割。
+**基于统一 Mamba 架构的文本引导 3D 脑肿瘤分割框架。** O(n) 序列复杂度，总参数约 ~180M（含 PubMedBERT ~109.5M frozen），可训练参数约 ~70M（默认解冻 BERT 最后 2 层）。利用临床诊断文本引导 MRI 体积分割，在 BraTS 系列脑肿瘤数据集上进行验证。
 
-<!-- 架构示意图（未来替换为 docs/architecture.png） -->
+<!-- 架构示意图 -->
+
+![Architecture](docs/architecture.png)
 
 ## 架构总览
 
+架构图中保持主干数据流简洁，以下模块已在代码中实现并以注释方式说明：
+
+- `Modality Grouping`: `T1 + T1ce` / `T2 + FLAIR`
+- 每阶段主块：`3D DWConv -> CrossScan BiMamba3D`（multi-scale）
+- 双路融合：`FiLM + Pixel-Text Cross-Attention`
+- `Uncertainty Gating` 在 CrossScan 块内抑制高不确定性特征
+- `Deep Supervision` 用于解码阶段多尺度监督
+
+<details>
+<summary><b>ASCII 架构图（fallback）</b></summary>
+
 ```
-    3D MRI 体积                                 临床诊断文本
-    (4ch: T1, T1ce, T2, FLAIR)                  "MRI示左侧额叶占位性病变..."
-             |                                           |
-      [Patch Embed 3D]                          [PubMedBERT (frozen)]
-             |                                       109.5M params
-             v                                           |
-    +--------------------+                      [Projection + Mamba]
-    | Stage 1: 96-dim    |<--- FiLM ------------ text_global
-    | CrossScan BiMamba  |     modulation            |
-    | (6方向扫描)         |                           |
-    +---------+----------+                           |
-              | PatchMerge                           |
-    +---------+----------+                           |
-    | Stage 2: 192-dim   |<--- FiLM ----------------+
-    | CrossScan BiMamba  |                           |
-    +---------+----------+                           |
-              | PatchMerge                           |
-    +---------+----------+                           |
-    | Stage 3: 384-dim   |<--- FiLM ----------------+
-    | CrossScan BiMamba  |                           |
-    +---------+----------+                           |
-              | PatchMerge                           |
-    +---------+----------+       +----------+        |
-    | Stage 4: 768-dim   |----->| Causal   |<-------+
-    | CrossScan BiMamba  |      | Mamba    |    text_seq
-    +--------------------+       | Fusion   |
-                                 +-----+----+
-                                       |
-    Decoder (对称结构)                    |
-    +--------------------+              |
-    | Stage 4 → 3 → 2 → 1|<-----------+
-    | + Skip Connections  |
-    +--------------------+
-              |
+    3D MRI 体积                                        临床诊断文本
+    (4ch: T1, T1ce, T2, FLAIR)                         "MRI示左侧额叶占位性病变..."
+             |                                                  |
+    [Modality Grouping]                               [PubMedBERT (frozen)]
+  (T1+T1ce / T2+FLAIR)                                   109.5M params
+             |                                                  |
+      [Patch Embed 3D]                                [Projection + Mamba]
+             |                                                  |
+    +----------------------+                    text_global + text_seq
+    | Encoder Stage 1..4   |<----- FiLM --------------+     |
+    | 3D DWConv ->         |                           |     |
+    | CrossScan BiMamba3D  |<-- Pixel-Text Cross-Attn-+     |
+    | (multi-scale)        |                                 |
+    +----------+-----------+                                 |
+               |                                             |
+       [Causal Mamba Fusion + Uncertainty Gating] <----------+
+               |
+     Decoder (对称结构 + Skip + Deep Supervision)
+               |
       [Final Expand + Conv3D]
-              |
-              v
+               v
        分割输出 [B, 4, D, H, W]
        (背景 / 坏死 / 水肿 / 强化肿瘤)
 ```
 
+</details>
+
 ## 核心亮点
 
-- **统一 Mamba 架构** -- 3D 编码器、文本编码器、融合模块、解码器全部使用 State Space Model，无注意力机制，O(n) 序列复杂度。
+- **统一 Mamba 架构** -- 3D 编码器、文本编码器、融合模块、解码器以 State Space Model 为主干，辅以轻量级 Cross-Attention 实现跨模态对齐，整体保持 O(n) 序列复杂度。
 
 - **CrossScan BiMamba3D** -- 沿 3 个空间轴双向扫描（共 6 个方向），提供完整的体积上下文信息，解决单向 SSM 的信息传播盲区。
 
@@ -67,6 +66,18 @@
 - **因果 Mamba 瓶颈融合** -- 文本 token 置于图像 token 之前，利用 Mamba 因果扫描特性，让文本信息自然流入图像表征。
 
 - **鲁棒训练策略** -- 类别加权 Dice + 3D Sobel 边缘损失 + 对比损失，支持梯度检查点、AMP 混合精度、TTA 测试时增强、高斯加权滑动窗口推理。
+
+- **3D Depthwise Conv 局部特征提取（已实现）** -- 在每个编码阶段先做 3D DWConv，再进入 CrossScan BiMamba3D，以增强局部空间建模。
+
+- **物理模态分组（已实现）** -- 输入模态按 `T1+T1ce` 与 `T2+FLAIR` 分组编码，保留临床上常见的互补关系。
+
+- **多尺度双分支扫描（已实现）** -- 在多尺度阶段执行双向扫描分支，结合不同空间尺度的上下文信息。
+
+- **Pixel-Text Cross-Attention（已实现）** -- 在像素 token 与文本 token 间进行跨模态对齐，用于细粒度语义引导。
+
+- **Uncertainty Gating（已实现）** -- 在 CrossScan BiMamba3D 块内通过不确定性门控抑制高噪声区域特征，控制多尺度信息聚合强度。
+
+- **Deep Supervision（已实现）** -- 在解码阶段加入多尺度辅助监督，约束中间层预测一致性。
 
 ## 快速开始
 
@@ -99,7 +110,9 @@ python evaluate.py --config configs/default.yaml --checkpoint checkpoints/best.p
 - [评估](#评估)
 - [推理](#推理)
 - [模型架构详解](#模型架构详解)
+- [初步实验结果（训练进行中）](#初步实验结果-训练进行中)
 - [项目结构](#项目结构)
+- [已知限制与展望](#已知限制与展望)
 - [常见问题](#常见问题)
 - [引用](#引用)
 - [致谢](#致谢)
@@ -318,44 +331,90 @@ python inference.py \
 
 | 组件 | 模块 | 参数量 | 关键设计 |
 |------|------|--------|---------|
-| 图像编码器 | CrossScanBiMamba3DLayer x4 | ~35M | 6 方向扫描（3 轴 x 2 方向） |
-| 文本编码器 | PubMedBERT + Projection + MambaLayer | ~110M (109.5M frozen) | CLS token 全局特征 |
-| 多尺度 FiLM | FiLMLayer x4 | ~18K | 每阶段 gamma/beta 调制 |
-| 瓶颈融合 | MambaFusion (causal) | ~4.7M | [text, image] 拼接 → Mamba → 提取图像 |
-| 图像解码器 | CrossScanBiMamba3DLayer x4 | ~6M | PatchExpanding + skip connections |
-| **总可训练参数** | | **~46M** | |
+| 模态分组与编码入口 | Modality Grouping + PatchEmbed3D | ~2M | `T1+T1ce` / `T2+FLAIR` 物理分组 |
+| 图像主干 | (3D DWConv -> CrossScanBiMamba3D) x4 | ~44M | 每阶段局部卷积 + 多尺度 6 方向扫描 |
+| 文本编码器 | PubMedBERT + Projection + MambaLayer | ~110M (109.5M frozen) | 全局/序列文本双表征 |
+| 双路跨模态融合 | MultiScaleFiLM + PixelTextCrossAttention | ~7M | 阶段级调制 + 像素-文本对齐 |
+| 不确定性门控 | UncertaintyGating | ~1M | 抑制高不确定性区域噪声 |
+| 解码与监督 | Decoder x4 + Deep Supervision Heads | ~16M | 对称解码 + 多尺度辅助输出 |
+| **总参数** | | **~180M** | 含 PubMedBERT |
+| **总可训练参数** | | **~70M** | PubMedBERT 冻结 + 最后 2 层解冻（默认配置） |
 
-### CrossScan BiMamba3D
+### CrossScan BiMamba3D 与 3D DWConv
 
-标准 Mamba 沿单一方向扫描 token 序列。对 3D 体积来说，这意味着一个轴序排列中相距很远的 token，在另一个轴序中可能相邻。CrossScan 通过三轴双向扫描解决这一问题：
+每个编码阶段采用 `3D DWConv -> CrossScan BiMamba3D` 的顺序：先提取局部纹理，再进行全局序列建模。CrossScan 通过三轴双向扫描增强 3D 上下文覆盖：
 
 1. **D-H-W**（深度优先）：正向 + 反向
 2. **H-W-D**（高度优先）：正向 + 反向
 3. **W-D-H**（宽度优先）：正向 + 反向
 
-6 个方向的输出通过可学习线性投影合并。
+6 个方向输出在多尺度分支中聚合后进入后续阶段。
 
-### 双重融合策略
+### 双路融合策略
 
 1. **多尺度 FiLM**：文本全局特征在编码器全部 4 个阶段通过 `output = gamma * features + beta` 调制图像特征，其中 gamma 和 beta 由文本预测。
 
-2. **因果 Mamba 融合**：在瓶颈层，文本 token 序列拼接到图像 token 序列之前。Mamba 的因果特性确保文本信息流入图像表征。融合后仅提取图像部分。
+2. **Pixel-Text Cross-Attention**：在像素 token 与文本 token 之间建立细粒度对齐，补充 FiLM 的全局调制能力。
+
+3. **Uncertainty Gating**：在 CrossScan BiMamba3D 块内部，对多尺度特征进行不确定性门控，降低高噪声区域的特征聚合干扰。
+
+4. **因果 Mamba 融合**：在瓶颈层将文本 token 置于图像 token 之前，利用因果扫描路径将文本上下文注入图像表征。
 
 ### 损失函数
 
 ```
-L_total = L_dice + L_ce + L_edge + lambda * L_contrastive
+L_total = L_main + lambda_ds * L_deep_supervision + L_edge + lambda_c * L_contrastive
+L_main  = L_dice + L_ce
 
 - L_dice:         类别加权 Dice（权重: [0.25, 3.0, 1.0, 4.0]）
 - L_ce:           类别加权交叉熵
+- L_deep_supervision: 多尺度辅助输出监督（解码中间层）
 - L_edge:         3D Sobel 边缘加权惩罚，提升边界清晰度
 - L_contrastive:  双向图像-文本对齐（batch_size > 1 时启用）
 ```
 
+### 可复现信息
+
+| 项目 | 设置 |
+|------|------|
+| 数据集 | BraTS2020 TextBraTS |
+| 样本量与划分 | 369 例，train/val = 80/20 |
+| 随机种子 | 42 |
+| 硬件 | RTX 4060 Laptop 8GB（WSL2） |
+| 输入 patch | `64^3` |
+| Batch Size | 1 |
+| 梯度累积 | 4 |
+| 训练加速 | AMP + Gradient Checkpointing |
+| 当前状态 | 训练进行中（epoch 11/150，截止 2026-03-04） |
+
 ---
 
-<details>
-<summary><b>项目结构</b></summary>
+## 初步实验结果 (训练进行中)
+
+> **注意**: 模型尚在训练中，以下结果为初步数据，不代表最终性能。最后更新：2026-03-04
+
+### 当前验证结果
+
+| 运行 | Val Dice (with text) | Val Dice (no text) | Text guidance 增益 |
+|------|-----------------------|--------------------|--------------------|
+| 当前训练（epoch 11/150） | 0.6233 | 0.5959 | +2.7% |
+
+| 对照运行 | 最佳 Val Dice | 对应 Epoch | 备注 |
+|----------|---------------|------------|------|
+| 上一轮训练（83 epochs） | 0.6366 | 62 | 历史最佳（供参考） |
+
+### 消融对比（待更新）
+
+| 设定 | Val Dice | 状态 |
+|------|----------|------|
+| FiLM + Pixel-Text Cross-Attention + Uncertainty Gating + Deep Supervision | - | 待更新 |
+| 去除 Pixel-Text Cross-Attention | - | 待更新 |
+| 去除 Uncertainty Gating | - | 待更新 |
+| 去除 Deep Supervision | - | 待更新 |
+
+---
+
+## 项目结构
 
 ```
 TextMamba3D/
@@ -391,12 +450,21 @@ TextMamba3D/
 ├── train.py                      # 训练（AMP + 梯度累积 + Early Stopping）
 ├── evaluate.py                   # 评估（BraTS 区域指标 + TTA）
 ├── inference.py                  # 推理（滑动窗口 + TTA + 自定义文本）
+├── smoke_test.py                 # 端到端冒烟测试脚本
 ├── requirements.txt
 ├── LICENSE
 └── README.md
 ```
 
-</details>
+---
+
+## 已知限制与展望
+
+- 当前仅在 BraTS2020 TextBraTS 单数据集上完成验证，尚未完成跨数据集泛化测试。
+- 训练样本量为 369 例，数据规模有限。
+- 文本输入依赖人工撰写的临床描述，文本质量与书写风格会影响引导效果。
+
+后续将补充跨数据集评估、完整消融结果与更长周期训练报告。
 
 ---
 
