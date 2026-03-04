@@ -39,6 +39,7 @@ class TextBraTSDataset(Dataset):
         max_text_len: int = 128,
         use_text_features: bool = False,  # 是否使用预计算的文本特征
         train_ratio: float = 0.8,  # 训练集比例
+        val_ratio: float = 0.0,  # 验证集比例（0 = 用 1-train_ratio）
         seed: int = 42,
     ):
         self.data_dir = data_dir
@@ -50,7 +51,7 @@ class TextBraTSDataset(Dataset):
 
         # Find all cases and split
         all_cases = self._find_cases()
-        self.cases = self._split_cases(all_cases, split, train_ratio, seed)
+        self.cases = self._split_cases(all_cases, split, train_ratio, val_ratio, seed)
 
         print(f"TextBraTS {split}: {len(self.cases)} samples")
 
@@ -85,18 +86,32 @@ class TextBraTSDataset(Dataset):
         all_cases: List[str],
         split: str,
         train_ratio: float,
+        val_ratio: float,
         seed: int
     ) -> List[str]:
-        """Split cases into train/val sets."""
+        """Split cases into train/val/test sets.
+
+        If val_ratio > 0: 3-way split (train / val / test).
+        If val_ratio == 0: 2-way split (train / val), backward compatible.
+        """
         np.random.seed(seed)
         indices = np.random.permutation(len(all_cases))
 
         train_size = int(len(all_cases) * train_ratio)
 
-        if split == 'train':
-            selected_indices = indices[:train_size]
-        else:  # val or test
-            selected_indices = indices[train_size:]
+        if val_ratio > 0:
+            val_size = int(len(all_cases) * val_ratio)
+            if split == 'train':
+                selected_indices = indices[:train_size]
+            elif split == 'val':
+                selected_indices = indices[train_size:train_size + val_size]
+            else:  # test
+                selected_indices = indices[train_size + val_size:]
+        else:
+            if split == 'train':
+                selected_indices = indices[:train_size]
+            else:  # val
+                selected_indices = indices[train_size:]
 
         return [all_cases[i] for i in selected_indices]
 

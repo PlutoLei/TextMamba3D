@@ -1,163 +1,157 @@
 # TextMamba3D
 
+**[中文版](README_CN.md)** | English
+
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.0-ee4c2c?logo=pytorch&logoColor=white)
 ![Mamba](https://img.shields.io/badge/Mamba_SSM-%3E%3D1.2.0-4B0082)
 ![License](https://img.shields.io/badge/License-Apache_2.0-green)
 ![Tests](https://img.shields.io/badge/Tests-214_passed-brightgreen)
 
-**基于统一 Mamba 架构的文本引导 3D 脑肿瘤分割框架。** O(n) 序列复杂度，总参数约 ~180M（含 PubMedBERT ~109.5M frozen），可训练参数约 ~70M（默认解冻 BERT 最后 2 层）。利用临床诊断文本引导 MRI 体积分割，在 BraTS 系列脑肿瘤数据集上进行验证。
-
-<!-- 架构示意图 -->
+**A text-guided 3D brain tumor segmentation framework built on a unified Mamba architecture.** Achieves O(n) sequence complexity with ~60M trainable parameters (embed_dim=48, PubMedBERT last 2 layers unfrozen). Leverages clinical diagnostic text to guide volumetric MRI segmentation, validated on BraTS2020 TextBraTS dataset.
 
 ![Architecture](docs/architecture.png)
 
-## 架构总览
+## Architecture Overview
 
-架构图中保持主干数据流简洁，以下模块已在代码中实现并以注释方式说明：
+The core data flow is kept clean in the architecture diagram. The following modules are implemented and annotated in code:
 
 - `Modality Grouping`: `T1 + T1ce` / `T2 + FLAIR`
-- 每阶段主块：`3D DWConv -> CrossScan BiMamba3D`（multi-scale）
-- 双路融合：`FiLM + Pixel-Text Cross-Attention`
-- `Uncertainty Gating` 在 CrossScan 块内抑制高不确定性特征
-- `Deep Supervision` 用于解码阶段多尺度监督
+- Per-stage main block: `3D DWConv → CrossScan BiMamba3D` (multi-scale)
+- Dual-path fusion: `FiLM + Pixel-Text Cross-Attention`
+- `Uncertainty Gating` within CrossScan blocks to suppress high-uncertainty features
+- `Deep Supervision` for multi-scale supervision in the decoder
 
 <details>
-<summary><b>ASCII 架构图（fallback）</b></summary>
+<summary><b>ASCII Architecture Diagram (fallback)</b></summary>
 
 ```
-    3D MRI 体积                                        临床诊断文本
-    (4ch: T1, T1ce, T2, FLAIR)                         "MRI示左侧额叶占位性病变..."
-             |                                                  |
-    [Modality Grouping]                               [PubMedBERT (frozen)]
-  (T1+T1ce / T2+FLAIR)                                   109.5M params
-             |                                                  |
-      [Patch Embed 3D]                                [Projection + Mamba]
-             |                                                  |
-    +----------------------+                    text_global + text_seq
-    | Encoder Stage 1..4   |<----- FiLM --------------+     |
-    | 3D DWConv ->         |                           |     |
-    | CrossScan BiMamba3D  |<-- Pixel-Text Cross-Attn-+     |
-    | (multi-scale)        |                                 |
-    +----------+-----------+                                 |
-               |                                             |
-       [Causal Mamba Fusion + Uncertainty Gating] <----------+
+    3D MRI Volume                                    Clinical Diagnostic Text
+    (4ch: T1, T1ce, T2, FLAIR)                      "MRI shows left frontal lobe mass..."
+             |                                                |
+    [Modality Grouping]                            [PubMedBERT (partially frozen)]
+  (T1+T1ce / T2+FLAIR)                                  ~109.5M params
+             |                                                |
+      [Patch Embed 3D]                             [Projection + Mamba]
+             |                                                |
+    +----------------------+                   text_global + text_seq
+    | Encoder Stage 1..4   |<----- FiLM -------------+     |
+    | 3D DWConv →          |                          |     |
+    | CrossScan BiMamba3D  |<-- Pixel-Text Cross-Attn +     |
+    | (multi-scale)        |                                |
+    +----------+-----------+                                |
+               |                                            |
+       [Causal Mamba Fusion + Uncertainty Gating] <---------+
                |
-     Decoder (对称结构 + Skip + Deep Supervision)
+     Decoder (symmetric + Skip + Deep Supervision)
                |
       [Final Expand + Conv3D]
                v
-       分割输出 [B, 4, D, H, W]
-       (背景 / 坏死 / 水肿 / 强化肿瘤)
+       Segmentation Output [B, 4, D, H, W]
+       (background / necrotic / edema / enhancing)
 ```
 
 </details>
 
-## 核心亮点
+## Key Features
 
-- **统一 Mamba 架构** -- 3D 编码器、文本编码器、融合模块、解码器以 State Space Model 为主干，辅以轻量级 Cross-Attention 实现跨模态对齐，整体保持 O(n) 序列复杂度。
+- **Unified Mamba Architecture** — Encoder, text encoder, fusion, and decoder all built on State Space Models with lightweight Cross-Attention for cross-modal alignment. O(n) overall sequence complexity.
 
-- **CrossScan BiMamba3D** -- 沿 3 个空间轴双向扫描（共 6 个方向），提供完整的体积上下文信息，解决单向 SSM 的信息传播盲区。
+- **CrossScan BiMamba3D** — Bidirectional scanning along 3 spatial axes (6 directions total), providing complete volumetric context and resolving the information propagation blind spots of unidirectional SSMs.
 
-- **PubMedBERT 预训练文本编码器** -- 冻结 109.5M 参数的生物医学语言模型，配合轻量级 Mamba 适配层（仅 ~18K 额外参数）。
+- **PubMedBERT Text Encoder** — Partially frozen biomedical language model (~109.5M params), with last 2 layers unfrozen for task adaptation and a lightweight Mamba adapter layer (~18K extra params).
 
-- **多尺度 FiLM 融合** -- 文本通过 Feature-wise Linear Modulation 在编码器的全部 4 个阶段调制图像特征，而非仅在瓶颈层融合。
+- **Multi-scale FiLM Fusion** — Text modulates image features via Feature-wise Linear Modulation across all 4 encoder stages, not just the bottleneck.
 
-- **因果 Mamba 瓶颈融合** -- 文本 token 置于图像 token 之前，利用 Mamba 因果扫描特性，让文本信息自然流入图像表征。
+- **Causal Mamba Bottleneck Fusion** — Text tokens prepended to image tokens, leveraging Mamba's causal scan to naturally inject text context into image representations.
 
-- **鲁棒训练策略** -- 类别加权 Dice + 3D Sobel 边缘损失 + 对比损失，支持梯度检查点、AMP 混合精度、TTA 测试时增强、高斯加权滑动窗口推理。
+- **Robust Training (v2)** — Manual warmup + cosine LR schedule, gradient clipping (max_norm=1.0), NaN batch skip, bfloat16 AMP, class-weighted Dice + 3D Sobel edge loss + contrastive loss.
 
-- **3D Depthwise Conv 局部特征提取（已实现）** -- 在每个编码阶段先做 3D DWConv，再进入 CrossScan BiMamba3D，以增强局部空间建模。
+- **Pixel-Text Cross-Attention** — Fine-grained alignment between pixel tokens and text tokens for semantic guidance.
 
-- **物理模态分组（已实现）** -- 输入模态按 `T1+T1ce` 与 `T2+FLAIR` 分组编码，保留临床上常见的互补关系。
+- **Uncertainty Gating** — Suppresses noisy region features within CrossScan BiMamba3D blocks.
 
-- **多尺度双分支扫描（已实现）** -- 在多尺度阶段执行双向扫描分支，结合不同空间尺度的上下文信息。
+- **Deep Supervision** — Multi-scale auxiliary losses at intermediate decoder stages.
 
-- **Pixel-Text Cross-Attention（已实现）** -- 在像素 token 与文本 token 间进行跨模态对齐，用于细粒度语义引导。
-
-- **Uncertainty Gating（已实现）** -- 在 CrossScan BiMamba3D 块内通过不确定性门控抑制高噪声区域特征，控制多尺度信息聚合强度。
-
-- **Deep Supervision（已实现）** -- 在解码阶段加入多尺度辅助监督，约束中间层预测一致性。
-
-## 快速开始
+## Quick Start
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/PlutoLei/TextMamba3D.git
 cd TextMamba3D
 
-# 安装依赖
+# Install dependencies
 pip install -r requirements.txt
 
-# 下载 PubMedBERT 到本地（需要联网，约 440MB）
+# Download PubMedBERT locally (~440MB)
 python scripts/download_pubmedbert.py
 
-# 快速测试训练（50 个样本）
+# Quick test run (50 samples)
 python train.py --config configs/textbrats.yaml --max-samples 50
 
-# 评估
+# Evaluate
 python evaluate.py --config configs/default.yaml --checkpoint checkpoints/best.pth
 ```
 
 ---
 
-## 目录
+## Table of Contents
 
-- [环境配置](#环境配置)
-- [数据准备](#数据准备)
-- [模型权重准备](#模型权重准备)
-- [训练](#训练)
-- [评估](#评估)
-- [推理](#推理)
-- [模型架构详解](#模型架构详解)
-- [初步实验结果（训练进行中）](#初步实验结果-训练进行中)
-- [项目结构](#项目结构)
-- [已知限制与展望](#已知限制与展望)
-- [常见问题](#常见问题)
-- [引用](#引用)
-- [致谢](#致谢)
-- [许可证](#许可证)
+- [Environment Setup](#environment-setup)
+- [Data Preparation](#data-preparation)
+- [Model Weights](#model-weights)
+- [Training](#training)
+- [Evaluation](#evaluation)
+- [Inference](#inference)
+- [Architecture Details](#architecture-details)
+- [Preliminary Results](#preliminary-results)
+- [Project Structure](#project-structure)
+- [Known Limitations](#known-limitations)
+- [FAQ](#faq)
+- [Citation](#citation)
+- [Acknowledgments](#acknowledgments)
+- [License](#license)
 
 ---
 
-## 环境配置
+## Environment Setup
 
-### 系统要求
+### System Requirements
 
-| 项目 | 要求 |
-|------|------|
+| Item | Requirement |
+|------|-------------|
 | Python | >= 3.8 |
-| CUDA | >= 11.8（mamba-ssm 需要 CUDA 编译） |
-| GPU 显存 | >= 8GB（推荐 12GB+） |
-| 操作系统 | Linux / WSL2（Windows 原生不支持 mamba-ssm） |
+| CUDA | >= 11.8 (mamba-ssm requires CUDA compilation) |
+| GPU VRAM | >= 8GB (12GB+ recommended) |
+| OS | Linux / WSL2 (Windows native does not support mamba-ssm) |
 
-### 快速安装
+### Quick Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
 <details>
-<summary><b>完整环境搭建（从零开始）</b></summary>
+<summary><b>Full Setup (from scratch)</b></summary>
 
 ```bash
-# 创建虚拟环境
+# Create virtual environment
 python -m venv venv
 source venv/bin/activate  # Linux / WSL2
 
-# 安装 PyTorch（根据 CUDA 版本选择）
+# Install PyTorch (choose by CUDA version)
 # CUDA 11.8
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 # CUDA 12.1
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# 安装 Mamba SSM（需要 CUDA 工具链）
+# Install Mamba SSM (requires CUDA toolchain)
 pip install mamba-ssm
 
-# 安装其余依赖
+# Install remaining dependencies
 pip install monai nibabel numpy scipy transformers pyyaml tensorboard tqdm einops pytest
 
-# 验证安装
+# Verify installation
 python scripts/verify_installation.py
 ```
 
@@ -165,144 +159,152 @@ python scripts/verify_installation.py
 
 ---
 
-## 数据准备
+## Data Preparation
 
-### BraTS 2021 数据集
+### TextBraTS Dataset (Recommended)
 
-从 [Synapse](https://www.synapse.org/#!Synapse:syn25829067) 或 [Kaggle](https://www.kaggle.com/datasets/dschettler8845/brats-2021-task1) 下载 BraTS 2021 训练数据，按以下结构组织：
+TextBraTS provides expert-written clinical descriptions for each case, avoiding the information leakage problem of auto-generated text from segmentation masks.
+
+- Source: [Kaggle BraTS2020](https://www.kaggle.com/datasets/awsaf49/brats20-dataset-training-validation) + [HuggingFace TextBraTS](https://huggingface.co/datasets/Jupitern52/TextBraTS)
+- 369 total cases, split into **220 train / 55 val / 94 test** (following the original TextBraTS paper)
 
 ```
-data/BraTS2021/
-├── train/
-│   ├── BraTS2021_00000/
-│   │   ├── BraTS2021_00000_t1.nii.gz
-│   │   ├── BraTS2021_00000_t1ce.nii.gz
-│   │   ├── BraTS2021_00000_t2.nii.gz
-│   │   ├── BraTS2021_00000_flair.nii.gz
-│   │   └── BraTS2021_00000_seg.nii.gz
-│   └── ...
-├── val/
-└── test/
+data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData/
+├── BraTS20_Training_001/
+│   ├── BraTS20_Training_001_t1.nii(.gz)
+│   ├── BraTS20_Training_001_t1ce.nii(.gz)
+│   ├── BraTS20_Training_001_t2.nii(.gz)
+│   ├── BraTS20_Training_001_flair.nii(.gz)
+│   ├── BraTS20_Training_001_seg.nii(.gz)
+│   └── BraTS20_Training_001_flair_text.txt   # Expert text
+└── ...
 ```
 
-数据加载时自动完成预处理：4 模态堆叠、Z-score 归一化（仅非零体素）、随机/中心裁剪。
+Preprocessing is automatic: 4-modality stacking, Z-score normalization (non-zero voxels only), random/center cropping.
 
 <details>
-<summary><b>备选：TextBraTS 数据集（MICCAI 2024，专家标注文本）</b></summary>
+<summary><b>Alternative: BraTS 2021</b></summary>
 
-TextBraTS 为每个病例提供放射科专家撰写的临床描述，避免从分割标注自动生成文本带来的信息泄露问题。
-
-- 数据来源：[Kaggle BraTS2020](https://www.kaggle.com/datasets/awsaf49/brats20-dataset-training-validation) + [HuggingFace TextBraTS](https://huggingface.co/datasets/Jupitern52/TextBraTS)
-- 使用 TextBraTS 配置：
+Download from [Synapse](https://www.synapse.org/#!Synapse:syn25829067) or [Kaggle](https://www.kaggle.com/datasets/dschettler8845/brats-2021-task1).
 
 ```bash
-python train.py --config configs/textbrats.yaml
+python train.py --config configs/default.yaml
 ```
 
 </details>
 
 ---
 
-## 模型权重准备
+## Model Weights
 
-TextMamba3D 的文本编码器使用 [PubMedBERT](https://huggingface.co/microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext)（~440MB）。训练前需先下载到本地：
+The text encoder uses [PubMedBERT](https://huggingface.co/microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext) (~440MB). Download before training:
 
 ```bash
 python scripts/download_pubmedbert.py
 ```
 
-模型将保存到 `./pretrained/pubmedbert/`，配置文件中已默认指向该路径。
-
-如果训练环境可直接访问 HuggingFace，也可以将配置中 `text_model_path` 设为 `null`，程序会自动从线上下载。
+Saved to `./pretrained/pubmedbert/`. Set `text_model_path: null` in config to download from HuggingFace automatically if your environment has internet access.
 
 ---
 
-## 训练
+## Training
 
-### 基础训练
+### v2 Training Configuration
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| embed_dim | 48 | Reduced from 96 for better param/sample ratio |
+| Learning rate | 5e-5 | Manual warmup (10 epochs) + cosine decay |
+| Weight decay | 0.01 | Standard AdamW regularization |
+| Epochs | 300 | With patience=50 early stopping |
+| Gradient clipping | max_norm=1.0 | Prevents gradient explosion |
+| AMP | bfloat16 | No GradScaler needed |
+| Gradient accumulation | 4 | Effective batch size = 4 |
+| Split | 220/55/94 | train/val/test (original paper split) |
+
+### Basic Training
 
 ```bash
-python train.py --config configs/default.yaml
+python train.py --config configs/textbrats.yaml
 ```
 
-### 快速测试（限制样本数）
+### Quick Test (limited samples)
 
 ```bash
 python train.py --config configs/textbrats.yaml --max-samples 50
 ```
 
-### 恢复训练
+### Resume Training
 
 ```bash
 python train.py --config configs/textbrats.yaml --resume checkpoints/last.pth
 ```
 
-### 查看训练曲线
+### View Training Curves
 
 ```bash
 tensorboard --logdir logs
 ```
 
 <details>
-<summary><b>命令行参数</b></summary>
+<summary><b>Command-line Arguments</b></summary>
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--config` | `configs/default.yaml` | 配置文件路径 |
-| `--resume` | None | 从 checkpoint 恢复训练 |
-| `--no-amp` | False | 禁用混合精度 |
-| `--no-text-ratio` | 0.1 | 无文本训练的样本比例 |
-| `--grad-accum` | 4 | 梯度累积步数 |
-| `--max-samples` | None | 限制训练样本数（调试用） |
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--config` | `configs/default.yaml` | Config file path |
+| `--resume` | None | Resume from checkpoint |
+| `--no-amp` | False | Disable mixed precision |
+| `--no-text-ratio` | 0.1 | Fraction of text-free training samples |
+| `--grad-accum` | 4 | Gradient accumulation steps |
+| `--max-samples` | None | Limit training samples (for debugging) |
 
 </details>
 
 <details>
-<summary><b>GPU 显存配置指南</b></summary>
+<summary><b>GPU VRAM Guide</b></summary>
 
-| GPU 显存 | 推荐配置 |
-|----------|---------|
-| 8 GB | `batch_size=1`, `patch_size=[64,64,64]`, `grad_accum=4`, AMP 开启 |
-| 12 GB | `batch_size=1`, `patch_size=[96,96,96]`, `grad_accum=4`, AMP 开启 |
-| 24 GB | `batch_size=2`, `patch_size=[96,96,96]`, `grad_accum=2`, AMP 开启 |
+| GPU VRAM | Recommended Config |
+|----------|--------------------|
+| 8 GB | `batch_size=1`, `patch_size=[64,64,64]`, `grad_accum=4`, AMP on |
+| 12 GB | `batch_size=1`, `patch_size=[96,96,96]`, `grad_accum=4`, AMP on |
+| 24 GB | `batch_size=2`, `patch_size=[96,96,96]`, `grad_accum=2`, AMP on |
 
-梯度检查点默认开启（`gradient_checkpointing: true`），可节省约 30-50% 显存，训练速度降低约 20%。
+Gradient checkpointing is on by default (`gradient_checkpointing: true`), saving ~30-50% VRAM with ~20% speed overhead.
 
 </details>
 
 ---
 
-## 评估
+## Evaluation
 
 ```bash
-# 标准评估（使用文本引导）
 python evaluate.py --config configs/default.yaml --checkpoint checkpoints/best.pth
 ```
 
-评估报告 BraTS 标准三区域指标：
+Reports standard BraTS three-region metrics:
 
-| 区域 | 定义 |
-|------|------|
-| ET (Enhancing Tumor) | 强化肿瘤（class 3） |
-| TC (Tumor Core) | 肿瘤核心（class 1 + 3） |
-| WT (Whole Tumor) | 全肿瘤（class 1 + 2 + 3） |
+| Region | Definition |
+|--------|------------|
+| ET (Enhancing Tumor) | Enhancing tumor (class 3) |
+| TC (Tumor Core) | Necrotic + enhancing (class 1 + 3) |
+| WT (Whole Tumor) | All tumor classes (class 1 + 2 + 3) |
 
-指标包括 Dice Score（越高越好）和 HD95 Hausdorff 距离（越低越好）。
+Metrics: Dice Score (higher is better) and HD95 Hausdorff Distance (lower is better).
 
 ---
 
-## 推理
+## Inference
 
-### 单例推理
+### Single Case
 
 ```bash
 python inference.py \
     --checkpoint checkpoints/best.pth \
-    --input /path/to/BraTS2021_00000 \
+    --input /path/to/BraTS20_Training_001 \
     --tta
 ```
 
-### 批量推理
+### Batch Inference
 
 ```bash
 python inference.py \
@@ -312,7 +314,7 @@ python inference.py \
     --output ./predictions
 ```
 
-### 自定义文本引导
+### Custom Text Guidance
 
 ```bash
 python inference.py \
@@ -321,136 +323,116 @@ python inference.py \
     --text "MRI shows left frontal lobe mass with enhancing component"
 ```
 
-输出 NIfTI 格式分割结果，保留原始仿射变换矩阵。
+Outputs NIfTI-format segmentation results with preserved affine matrices.
 
 ---
 
-## 模型架构详解
+## Architecture Details
 
-### 组件概览
+### Component Overview
 
-| 组件 | 模块 | 参数量 | 关键设计 |
-|------|------|--------|---------|
-| 模态分组与编码入口 | Modality Grouping + PatchEmbed3D | ~2M | `T1+T1ce` / `T2+FLAIR` 物理分组 |
-| 图像主干 | (3D DWConv -> CrossScanBiMamba3D) x4 | ~44M | 每阶段局部卷积 + 多尺度 6 方向扫描 |
-| 文本编码器 | PubMedBERT + Projection + MambaLayer | ~110M (109.5M frozen) | 全局/序列文本双表征 |
-| 双路跨模态融合 | MultiScaleFiLM + PixelTextCrossAttention | ~7M | 阶段级调制 + 像素-文本对齐 |
-| 不确定性门控 | UncertaintyGating | ~1M | 抑制高不确定性区域噪声 |
-| 解码与监督 | Decoder x4 + Deep Supervision Heads | ~16M | 对称解码 + 多尺度辅助输出 |
-| **总参数** | | **~180M** | 含 PubMedBERT |
-| **总可训练参数** | | **~70M** | PubMedBERT 冻结 + 最后 2 层解冻（默认配置） |
+| Component | Module | Params | Key Design |
+|-----------|--------|--------|------------|
+| Modality Grouping + Patch Embed | PatchEmbed3D | ~0.5M | `T1+T1ce` / `T2+FLAIR` physical grouping |
+| Image Backbone | (3D DWConv → CrossScanBiMamba3D) ×4 | ~12M | Per-stage local conv + multi-scale 6-dir scan |
+| Text Encoder | PubMedBERT + Projection + MambaLayer | ~110M (109.5M frozen) | Global/sequential dual text representations |
+| Cross-modal Fusion | MultiScaleFiLM + PixelTextCrossAttention | ~2M | Stage-level modulation + pixel-text alignment |
+| Uncertainty Gating | UncertaintyGating | ~0.3M | Suppress noisy region features |
+| Decoder + Supervision | Decoder ×4 + Deep Supervision Heads | ~5M | Symmetric decoding + multi-scale auxiliary outputs |
+| **Total** | | **~130M** | With PubMedBERT |
+| **Trainable** | | **~60M** | PubMedBERT frozen + last 2 layers unfrozen |
 
-### CrossScan BiMamba3D 与 3D DWConv
+### CrossScan BiMamba3D
 
-每个编码阶段采用 `3D DWConv -> CrossScan BiMamba3D` 的顺序：先提取局部纹理，再进行全局序列建模。CrossScan 通过三轴双向扫描增强 3D 上下文覆盖：
+Each encoder stage uses `3D DWConv → CrossScan BiMamba3D`: local texture extraction followed by global sequence modeling. CrossScan provides complete 3D context via tri-axial bidirectional scanning:
 
-1. **D-H-W**（深度优先）：正向 + 反向
-2. **H-W-D**（高度优先）：正向 + 反向
-3. **W-D-H**（宽度优先）：正向 + 反向
+1. **D-H-W** (depth-first): forward + reverse
+2. **H-W-D** (height-first): forward + reverse
+3. **W-D-H** (width-first): forward + reverse
 
-6 个方向输出在多尺度分支中聚合后进入后续阶段。
+Outputs from 6 directions are aggregated through multi-scale branches.
 
-### 双路融合策略
+### Dual-path Fusion
 
-1. **多尺度 FiLM**：文本全局特征在编码器全部 4 个阶段通过 `output = gamma * features + beta` 调制图像特征，其中 gamma 和 beta 由文本预测。
+1. **Multi-scale FiLM**: Text global features modulate image features across all 4 encoder stages via `output = gamma * features + beta`.
+2. **Pixel-Text Cross-Attention**: Fine-grained pixel-text alignment complementing FiLM's global modulation.
+3. **Uncertainty Gating**: Uncertainty-based gating within CrossScan blocks to reduce noisy feature aggregation.
+4. **Causal Mamba Fusion**: At the bottleneck, text tokens are prepended to image tokens, leveraging causal scanning to inject text context.
 
-2. **Pixel-Text Cross-Attention**：在像素 token 与文本 token 之间建立细粒度对齐，补充 FiLM 的全局调制能力。
-
-3. **Uncertainty Gating**：在 CrossScan BiMamba3D 块内部，对多尺度特征进行不确定性门控，降低高噪声区域的特征聚合干扰。
-
-4. **因果 Mamba 融合**：在瓶颈层将文本 token 置于图像 token 之前，利用因果扫描路径将文本上下文注入图像表征。
-
-### 损失函数
+### Loss Function
 
 ```
-L_total = L_main + lambda_ds * L_deep_supervision + L_edge + lambda_c * L_contrastive
+L_total = L_main + λ_ds * L_deep_supervision + L_edge + λ_c * L_contrastive
 L_main  = L_dice + L_ce
 
-- L_dice:         类别加权 Dice（权重: [0.25, 3.0, 1.0, 4.0]）
-- L_ce:           类别加权交叉熵
-- L_deep_supervision: 多尺度辅助输出监督（解码中间层）
-- L_edge:         3D Sobel 边缘加权惩罚，提升边界清晰度
-- L_contrastive:  双向图像-文本对齐（batch_size > 1 时启用）
+- L_dice:             Class-weighted Dice (weights: [0.25, 3.0, 1.0, 4.0])
+- L_ce:               Class-weighted cross-entropy
+- L_deep_supervision: Multi-scale auxiliary output supervision
+- L_edge:             3D Sobel edge-weighted penalty for boundary clarity
+- L_contrastive:      Bidirectional image-text alignment (active when batch_size > 1)
 ```
 
-### 可复现信息
+### Reproducibility
 
-| 项目 | 设置 |
-|------|------|
-| 数据集 | BraTS2020 TextBraTS |
-| 样本量与划分 | 369 例，train/val = 80/20 |
-| 随机种子 | 42 |
-| 硬件 | RTX 4060 Laptop 8GB（WSL2） |
-| 输入 patch | `64^3` |
+| Item | Setting |
+|------|---------|
+| Dataset | BraTS2020 TextBraTS |
+| Samples & Split | 369 cases: 220 train / 55 val / 94 test |
+| Random Seed | 42 |
+| Hardware | RTX 4060 Laptop 8GB (WSL2) |
+| Input Patch | 64³ |
 | Batch Size | 1 |
-| 梯度累积 | 4 |
-| 训练加速 | AMP + Gradient Checkpointing |
-| 当前状态 | 训练进行中（epoch 11/150，截止 2026-03-04） |
+| Gradient Accumulation | 4 |
+| Training Acceleration | bfloat16 AMP + Gradient Checkpointing |
+| Status | Training in progress (v2, 300 epochs) |
 
 ---
 
-## 初步实验结果 (训练进行中)
+## Preliminary Results
 
-> **注意**: 模型尚在训练中，以下结果为初步数据，不代表最终性能。最后更新：2026-03-04
+> **Note**: The model is currently training. Results below are preliminary and do not represent final performance.
 
-### 当前验证结果
-
-| 运行 | Val Dice (with text) | Val Dice (no text) | Text guidance 增益 |
-|------|-----------------------|--------------------|--------------------|
-| 当前训练（epoch 11/150） | 0.6233 | 0.5959 | +2.7% |
-
-| 对照运行 | 最佳 Val Dice | 对应 Epoch | 备注 |
-|----------|---------------|------------|------|
-| 上一轮训练（83 epochs） | 0.6366 | 62 | 历史最佳（供参考） |
-
-### 消融对比（待更新）
-
-| 设定 | Val Dice | 状态 |
-|------|----------|------|
-| FiLM + Pixel-Text Cross-Attention + Uncertainty Gating + Deep Supervision | - | 待更新 |
-| 去除 Pixel-Text Cross-Attention | - | 待更新 |
-| 去除 Uncertainty Gating | - | 待更新 |
-| 去除 Deep Supervision | - | 待更新 |
+Results will be updated upon training completion.
 
 ---
 
-## 项目结构
+## Project Structure
 
 ```
 TextMamba3D/
 ├── configs/
-│   ├── default.yaml              # BraTS2021 配置 (96^3 patch)
-│   └── textbrats.yaml            # TextBraTS 配置 (64^3 patch)
+│   ├── default.yaml              # BraTS2021 config (96³ patch)
+│   └── textbrats.yaml            # TextBraTS config (64³ patch, v2 optimized)
 ├── data/
-│   ├── brats_dataset.py          # BraTS2021 数据加载器
-│   ├── brats_textbrats_dataset.py # TextBraTS 数据加载器
-│   ├── text_generator.py         # 从分割 mask 自动生成诊断文本
-│   └── transforms.py             # 3D 数据增强（裁剪/翻转/弹性/噪声）
+│   ├── brats_dataset.py          # BraTS2021 dataloader
+│   ├── brats_textbrats_dataset.py # TextBraTS dataloader (3-way split)
+│   ├── text_generator.py         # Auto-generate diagnostic text from masks
+│   └── transforms.py             # 3D augmentation (crop/flip/elastic/noise)
 ├── models/
 │   ├── mamba_block.py            # MambaBlock, BiMamba, CrossScanBiMamba3D
 │   ├── encoder_3d.py             # PatchEmbed3D, PatchMerging3D, MambaEncoder3D
-│   ├── text_encoder.py           # PubMedBERT + Mamba 文本编码器
+│   ├── text_encoder.py           # PubMedBERT + Mamba text encoder
 │   ├── fusion.py                 # FiLM, MultiScaleFiLM, MambaFusion
 │   ├── decoder_3d.py             # PatchExpanding3D, MambaDecoder3D
-│   └── textmamba3d.py            # TextMamba3D 主模型
+│   └── textmamba3d.py            # TextMamba3D main model
 ├── losses/
-│   ├── dice_loss.py              # 类别加权 Dice 损失
-│   ├── edge_loss.py              # 3D Sobel 边缘损失
-│   ├── contrastive_loss.py       # 双向对比损失
+│   ├── dice_loss.py              # Class-weighted Dice loss
+│   ├── edge_loss.py              # 3D Sobel edge loss
+│   ├── contrastive_loss.py       # Bidirectional contrastive loss
 │   └── __init__.py               # CombinedLoss
 ├── utils/
-│   ├── metrics.py                # Dice, HD95（BraTS 区域指标）
-│   ├── tta.py                    # 测试时增强
-│   └── sliding_window.py         # 高斯加权滑动窗口
-├── tests/                        # 214 个测试，7 个测试文件
+│   ├── metrics.py                # Dice, HD95 (BraTS region metrics)
+│   ├── tta.py                    # Test-time augmentation
+│   └── sliding_window.py         # Gaussian-weighted sliding window
+├── tests/                        # 214 tests across 7 test files
 ├── scripts/
-│   ├── download_pubmedbert.py    # PubMedBERT 预下载脚本
-│   ├── prepare_brats.py          # 数据预处理脚本
-│   └── verify_installation.py    # 安装验证脚本
-├── train.py                      # 训练（AMP + 梯度累积 + Early Stopping）
-├── evaluate.py                   # 评估（BraTS 区域指标 + TTA）
-├── inference.py                  # 推理（滑动窗口 + TTA + 自定义文本）
-├── smoke_test.py                 # 端到端冒烟测试脚本
+│   ├── download_pubmedbert.py    # PubMedBERT download script
+│   ├── prepare_brats.py          # Data preprocessing script
+│   └── verify_installation.py    # Installation verification
+├── train.py                      # Training (bfloat16 AMP + grad clipping + manual LR)
+├── evaluate.py                   # Evaluation (BraTS region metrics + TTA)
+├── inference.py                  # Inference (sliding window + TTA + custom text)
+├── smoke_test.py                 # End-to-end smoke test
 ├── requirements.txt
 ├── LICENSE
 └── README.md
@@ -458,72 +440,69 @@ TextMamba3D/
 
 ---
 
-## 已知限制与展望
+## Known Limitations
 
-- 当前仅在 BraTS2020 TextBraTS 单数据集上完成验证，尚未完成跨数据集泛化测试。
-- 训练样本量为 369 例，数据规模有限。
-- 文本输入依赖人工撰写的临床描述，文本质量与书写风格会影响引导效果。
-
-后续将补充跨数据集评估、完整消融结果与更长周期训练报告。
+- Currently validated only on BraTS2020 TextBraTS; cross-dataset generalization tests pending.
+- Training set limited to 220 cases.
+- Text input depends on manually written clinical descriptions; text quality and writing style affect guidance effectiveness.
+- mamba-ssm requires Linux/WSL2; Windows native is not supported.
 
 ---
 
-## 常见问题
+## FAQ
 
 <details>
-<summary><b>WSL2 无法连接 HuggingFace / 网络不通</b></summary>
+<summary><b>WSL2 cannot connect to HuggingFace / network issues</b></summary>
 
-WSL2 网络问题导致无法在线下载 PubMedBERT。解决方法：
+WSL2 networking may block HuggingFace downloads. Workaround:
 
-1. 在 Windows 上运行预下载脚本（Windows 网络正常的情况下）：
+1. Run the download script on Windows (where networking works):
    ```bash
    cd TextMamba3D
    python scripts/download_pubmedbert.py
    ```
-2. 下载完成后，WSL2 通过 `/mnt/e/...` 路径直接读取本地文件，无需联网。
+2. WSL2 reads local files via `/mnt/e/...` — no internet needed.
 
-如需修复 WSL2 网络本身，检查 DNS 和代理配置：
+To fix WSL2 networking directly:
 ```bash
-# 在 WSL2 中
 cat /etc/resolv.conf
-# 如果 nameserver 不正确，手动设置：
 sudo sh -c 'echo "nameserver 8.8.8.8" > /etc/resolv.conf'
 ```
 
 </details>
 
 <details>
-<summary><b>mamba-ssm 安装失败</b></summary>
+<summary><b>mamba-ssm installation fails</b></summary>
 
-mamba-ssm 需要 CUDA 工具链编译。确认：
+mamba-ssm requires CUDA toolchain. Verify:
 
 ```bash
-nvcc --version   # 需要 CUDA 11.8+
+nvcc --version   # Need CUDA 11.8+
 ```
 
-如果安装超时，尝试从源码安装：
+Try building from source:
 ```bash
 pip install mamba-ssm --no-build-isolation
 ```
 
-注意：Windows 原生不支持 mamba-ssm，必须在 Linux 或 WSL2 环境下安装和运行。
+**Note:** Windows native does not support mamba-ssm. Use Linux or WSL2.
 
 </details>
 
 <details>
-<summary><b>显存不足 (OOM)</b></summary>
+<summary><b>Out of memory (OOM)</b></summary>
 
-1. 减小 `patch_size`：96 -> 64（在 config YAML 中修改）
-2. 确认 `gradient_checkpointing: true`（默认已开启）
-3. 使用 `--grad-accum 8` 增大累积步数
-4. 确认 AMP 已启用（默认开启，`--no-amp` 会禁用）
+1. Reduce `patch_size`: 96 → 64 (in config YAML)
+2. Ensure `gradient_checkpointing: true` (on by default)
+3. Increase accumulation: `--grad-accum 8`
+4. Ensure AMP is enabled (on by default; `--no-amp` disables it)
 
 </details>
 
 <details>
 <summary><b>ImportError: GreedySearchDecoderOnlyOutput</b></summary>
 
-transformers 版本过新导致。降级至测试通过的版本：
+Caused by too-new transformers version. Downgrade:
 
 ```bash
 pip install transformers==4.38.0
@@ -532,17 +511,17 @@ pip install transformers==4.38.0
 </details>
 
 <details>
-<summary><b>训练启动后卡住不动</b></summary>
+<summary><b>Training hangs at start</b></summary>
 
-首次运行时 Mamba CUDA 内核需要即时编译（JIT），通常需要 1-2 分钟，之后会自动继续。
+Mamba CUDA kernels are JIT-compiled on first run, typically taking 1-2 minutes. Training resumes automatically.
 
 </details>
 
 ---
 
-## 引用
+## Citation
 
-如果本项目对您的研究有帮助，请引用：
+If this project helps your research, please cite:
 
 ```bibtex
 @article{textmamba3d2026,
@@ -555,19 +534,19 @@ pip install transformers==4.38.0
 
 ---
 
-## 致谢
+## Acknowledgments
 
-本项目基于以下优秀工作：
+This project builds on the following works:
 
-- [Mamba](https://github.com/state-spaces/mamba) -- State Space Model 架构
-- [U-Mamba](https://github.com/bowang-lab/U-Mamba) -- Mamba 医学图像分割应用
-- [PubMedBERT](https://huggingface.co/microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext) -- 生物医学语言模型
-- [BraTS 2021](https://www.synapse.org/#!Synapse:syn25829067) -- 脑肿瘤分割挑战赛
-- [TextBraTS](https://huggingface.co/datasets/Jupitern52/TextBraTS) -- 文本引导脑肿瘤分割（MICCAI 2024）
-- [MONAI](https://monai.io/) -- 医学人工智能开放网络
+- [Mamba](https://github.com/state-spaces/mamba) — State Space Model architecture
+- [U-Mamba](https://github.com/bowang-lab/U-Mamba) — Mamba for medical image segmentation
+- [PubMedBERT](https://huggingface.co/microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext) — Biomedical language model
+- [BraTS 2020](https://www.synapse.org/#!Synapse:syn25829067) — Brain Tumor Segmentation Challenge
+- [TextBraTS](https://huggingface.co/datasets/Jupitern52/TextBraTS) — Text-guided brain tumor segmentation (MICCAI 2024)
+- [MONAI](https://monai.io/) — Medical Open Network for AI
 
 ---
 
-## 许可证
+## License
 
-本项目基于 [Apache License 2.0](LICENSE) 开源。
+This project is licensed under the [Apache License 2.0](LICENSE).

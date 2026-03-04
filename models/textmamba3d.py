@@ -5,6 +5,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .decoder_3d import MambaDecoder3D
 from .encoder_3d import MambaEncoder3D
@@ -138,7 +139,12 @@ class TextMamba3D(nn.Module):
         if has_text:
             text_features = self.text_encoder(text_ids, attention_mask)
         else:
-            text_features = self.default_text_embed.expand(batch_size, -1, -1)
+            # Normalize default_text_embed to match BERT encoder output scale (~unit variance)
+            # Without this, the 0.02-scale embed causes Mamba fusion to produce NaN
+            text_features = F.layer_norm(
+                self.default_text_embed.expand(batch_size, -1, -1),
+                [self.default_text_embed.shape[-1]],
+            )
 
         # Text global feature for FiLM and contrastive loss
         text_global = (

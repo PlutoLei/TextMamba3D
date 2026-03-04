@@ -2,6 +2,7 @@
 """Training script for TextMamba3D model."""
 
 import argparse
+import math
 import os
 from typing import Optional
 
@@ -74,14 +75,23 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def get_lr(epoch: int, warmup_epochs: int, base_lr: float, total_epochs: int) -> float:
+    if epoch < warmup_epochs:
+        return base_lr * (epoch + 1) / warmup_epochs
+    return base_lr * 0.5 * (
+        1 + math.cos(math.pi * (epoch - warmup_epochs) / (total_epochs - warmup_epochs))
+    )
+
+
 def train_epoch(
     model, loader, criterion, optimizer, device, epoch,
     scaler=None, use_amp=True, no_text_ratio=0.1, grad_accum=1,
-    need_features=True,
-) -> float:
+    need_features=True, clip_norm=1.0,
+) -> tuple[float, float]:
     model.train()
     total_loss = 0.0
     nan_count = 0
+    max_grad_norm = 0.0
     optimizer.zero_grad()
 
     pbar = tqdm(loader, desc=f'Epoch {epoch}')
@@ -94,7 +104,7 @@ def train_epoch(
             attn_mask = attn_mask.to(device)
         use_text = np.random.random() > no_text_ratio
 
-        with autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp):
+        with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
             if need_features:
                 pred, img_feat, text_feat = model(
                     image,
@@ -119,10 +129,13 @@ def train_epoch(
 
         if torch.isnan(loss).any().item() or torch.isinf(loss).any().item():
             nan_count += 1
-            print(
-                f'[NaN/Inf] epoch={epoch}, batch_idx={batch_idx}, use_text={use_text}. '
-                'Skip batch and clear accumulated gradients.'
-            )
+            # Diagnostic: check if NaN is from model output (first 5 per epoch)
+            if nan_count <= 5:
+                pred_nan = torch.isnan(pred).sum().item()
+                pred_inf = torch.isinf(pred).sum().item()
+                pred_max = pred.float().abs().max().item()
+                print(f'[NaN/Inf] epoch={epoch}, batch={batch_idx}, text={use_text}, '
+                      f'pred_nan={pred_nan}, pred_inf={pred_inf}, pred_absmax={pred_max:.2e}')
             optimizer.zero_grad()
             pbar.set_postfix({'loss': 'NaN/Inf', 'text': 'Y' if use_text else 'N'})
             continue
@@ -136,19 +149,21 @@ def train_epoch(
         if (batch_idx + 1) % grad_accum == 0 or (batch_idx + 1) == len(loader):
             if scaler is not None:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
                 optimizer.step()
+            grad_norm_value = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm)
+            max_grad_norm = max(max_grad_norm, grad_norm_value)
             optimizer.zero_grad()
 
         total_loss += loss.item() * grad_accum
         pbar.set_postfix({'loss': f'{loss.item() * grad_accum:.4f}', 'text': 'Y' if use_text else 'N'})
 
     print(f'Epoch {epoch}: NaN/Inf skipped batches={nan_count}')
-    return total_loss / len(loader)
+    return total_loss / len(loader), max_grad_norm
 
 
 @torch.no_grad()
@@ -169,7 +184,7 @@ def validate(model, loader, criterion, device, use_amp=True, use_text=True) -> t
         else:
             attn_mask = None
 
-        with autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp):
+        with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
             pred, img_feat, text_feat = model(
                 image, text_ids, attention_mask=attn_mask,
                 return_features=True, use_text=use_text
@@ -220,6 +235,7 @@ def main():
         # TextBraTS 数据集 (专家标注文本, 无信息泄露)
         print("Using TextBraTS dataset (expert-annotated text)")
         train_ratio = config['data'].get('train_ratio', 0.8)
+        val_ratio = config['data'].get('val_ratio', 0.0)
 
         train_dataset = TextBraTSDataset(
             data_dir=config['data']['data_dir'],
@@ -228,6 +244,7 @@ def main():
             tokenizer=tokenizer,
             max_text_len=max_text_len,
             train_ratio=train_ratio,
+            val_ratio=val_ratio,
         )
         val_dataset = TextBraTSDataset(
             data_dir=config['data']['data_dir'],
@@ -236,6 +253,7 @@ def main():
             tokenizer=tokenizer,
             max_text_len=max_text_len,
             train_ratio=train_ratio,
+            val_ratio=val_ratio,
         )
     else:
         # 原始 BraTS2021 数据集 (自动生成文本)
@@ -328,23 +346,15 @@ def main():
         weight_decay=config['training']['weight_decay'],
     )
 
-    # Scheduler: Warmup + CosineAnnealing
+    # Manual LR schedule config (warmup + cosine decay)
     warmup_epochs = config['training'].get('warmup_epochs', 5)
     total_epochs = config['training']['epochs']
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
-    )
-    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_epochs - warmup_epochs
-    )
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup_scheduler, cosine_scheduler],
-        milestones=[warmup_epochs],
-    )
+    base_lr = config['training']['lr']
+    cfg_clip = config['training'].get('gradient_clip_norm', 1.0)
 
-    # AMP scaler
-    scaler = GradScaler(init_scale=2**14, growth_interval=2000) if use_amp else None
+    # AMP scaler — bfloat16 does NOT need GradScaler (same exponent range as fp32)
+    # GradScaler is only needed for float16 to prevent gradient underflow
+    scaler = None
 
     # Early stopping
     early_stopping = EarlyStopping(
@@ -365,8 +375,6 @@ def main():
         checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
-        if 'scheduler' in checkpoint:
-            scheduler.load_state_dict(checkpoint['scheduler'])
         if scaler is not None and checkpoint.get('scaler') is not None:
             scaler.load_state_dict(checkpoint['scaler'])
         start_epoch = checkpoint['epoch'] + 1
@@ -379,11 +387,15 @@ def main():
 
     # Training loop
     for epoch in range(start_epoch, config['training']['epochs']):
+        current_lr = get_lr(epoch, warmup_epochs, base_lr, total_epochs)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = current_lr
+
         # Train
-        train_loss = train_epoch(
+        train_loss, max_grad_norm = train_epoch(
             model, train_loader, criterion, optimizer, device, epoch,
             scaler=scaler, use_amp=use_amp, no_text_ratio=args.no_text_ratio,
-            grad_accum=args.grad_accum, need_features=need_features
+            grad_accum=args.grad_accum, need_features=need_features, clip_norm=cfg_clip
         )
 
         # Validate with text (standard mode)
@@ -394,15 +406,14 @@ def main():
             model, val_loader, criterion, device, use_amp=use_amp, use_text=False
         )
 
-        scheduler.step()
-
         # Log
         writer.add_scalar('Loss/train', train_loss, epoch)
         writer.add_scalar('Loss/val', val_loss, epoch)
         writer.add_scalar('Loss/val_no_text', val_loss_no_text, epoch)
         writer.add_scalar('Dice/val', val_dice, epoch)
         writer.add_scalar('Dice/val_no_text', val_dice_no_text, epoch)
-        writer.add_scalar('LR', scheduler.get_last_lr()[0], epoch)
+        writer.add_scalar('LR', current_lr, epoch)
+        writer.add_scalar('GradNorm/max', max_grad_norm, epoch)
 
         print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
         print(f'  With text:    val_loss={val_loss:.4f}, val_dice={val_dice:.4f}')
@@ -415,7 +426,6 @@ def main():
                 'epoch': epoch,
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
                 'best_dice': best_dice,
                 'best_dice_no_text': best_dice_no_text,
                 'scaler': scaler.state_dict() if scaler is not None else None,
