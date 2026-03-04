@@ -12,3 +12,12 @@ logs/
 .DS_Store
 .idea/
 pretrained/
+docs/run_*/
+docs/architecture_prompt.txt
+task_plan.md
+findings.md
+progress.md
+.claude/
+nul
+mamba_install.log
+data/brats_dataset_fast.py

@@ -19,7 +19,7 @@ model:
   text_embed_dim: 256
   text_max_len: 256       # 增加文本长度以容纳专家描述
   use_pretrained_text: true    # Use PubMedBERT pretrained text encoder
-  unfreeze_text_layers: 0      # Number of BERT layers to unfreeze (0=all frozen)
+  unfreeze_text_layers: 2      # Unfreeze last 2 BERT layers for task adaptation (+14M params)
   text_model_path: "./pretrained/pubmedbert"  # Local path; set to null to download from HuggingFace
 
 loss:
@@ -32,16 +32,20 @@ loss:
   # BraTS class weights: [background, necrotic, edema, enhancing]
   class_weights: [0.25, 3.0, 1.0, 4.0]
 
+augmentation:
+  use_elastic: true             # Elastic deformation for small dataset
+  use_modality_dropout: true    # Modality dropout prevents single-modality overfitting
+
 training:
-  epochs: 100
+  epochs: 150
   lr: 0.0001
   weight_decay: 0.00001
   warmup_epochs: 5
-  patience: 20
+  patience: 30                  # More patience for larger dataset convergence
   gradient_accumulation: 4
   gradient_checkpointing: true  # Save ~30-50% GPU memory
-  # 不再需要无文本训练 (TextBraTS 文本质量高)
-  no_text_ratio: 0.0
+  deep_supervision: true        # Aux heads at intermediate decoder stages
+  no_text_ratio: 0.15           # 15% text-free training for robustness
 
 eval:
   metrics: ["dice", "hd95"]
@@ -49,4 +53,4 @@ eval:
 # 实验记录
 experiment:
   name: "TextMamba3D_TextBraTS"
-  description: "Text-guided 3D brain tumor segmentation with expert-annotated text (no leakage)"
+  description: "Phase 5: full 369 samples, unfreeze BERT-2, deep supervision, FiLM warm-init"

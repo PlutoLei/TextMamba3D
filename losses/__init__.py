@@ -14,6 +14,9 @@ class CombinedLoss(nn.Module):
     Skips expensive computation when a loss weight is zero.
     """
 
+    # Standard geometric decay weights for deep supervision aux heads
+    DS_WEIGHTS = [0.5, 0.25, 0.125]
+
     def __init__(
         self,
         dice_weight: float = 1.0,
@@ -46,7 +49,7 @@ class CombinedLoss(nn.Module):
         """Return a zero scalar on the same device as pred."""
         return pred.new_zeros(())
 
-    def forward(self, pred, target, img_feat=None, text_feat=None) -> dict:
+    def forward(self, pred, target, img_feat=None, text_feat=None, aux_preds=None) -> dict:
         losses = {}
 
         # Only compute losses with nonzero weights
@@ -68,4 +71,20 @@ class CombinedLoss(nn.Module):
             self.edge_weight * losses['edge'] +
             self.contrastive_weight * losses['contrastive']
         )
+
+        # Deep supervision: aux heads at intermediate decoder stages
+        if aux_preds:
+            ds_loss = self._zero(pred)
+            target_size = target.shape[1:]  # (D, H, W)
+            for w, aux in zip(self.DS_WEIGHTS, aux_preds):
+                aux_up = F.interpolate(aux, size=target_size, mode='trilinear', align_corners=False)
+                ds_loss = ds_loss + w * (
+                    self.dice_loss(aux_up, target) +
+                    F.cross_entropy(aux_up, target, weight=self.ce_class_weights)
+                )
+            losses['deep_supervision'] = ds_loss
+            losses['total'] = losses['total'] + ds_loss
+        else:
+            losses['deep_supervision'] = self._zero(pred)
+
         return losses

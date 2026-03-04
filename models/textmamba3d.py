@@ -33,6 +33,7 @@ class TextMamba3D(nn.Module):
         unfreeze_text_layers: int = 0,
         use_checkpoint: bool = False,
         text_model_path: str | None = None,
+        deep_supervision: bool = False,
     ) -> None:
         super().__init__()
 
@@ -80,6 +81,7 @@ class TextMamba3D(nn.Module):
             d_state=d_state,
             dropout=dropout,
             use_checkpoint=use_checkpoint,
+            deep_supervision=deep_supervision,
         )
 
         # Multi-scale FiLM: text guides all encoder stages, not just bottleneck

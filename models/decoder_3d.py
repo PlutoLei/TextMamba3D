@@ -46,9 +46,11 @@ class MambaDecoder3D(nn.Module):
         d_state: int = 16,
         dropout: float = 0.0,
         use_checkpoint: bool = False,
+        deep_supervision: bool = False,
     ):
         super().__init__()
         self.num_stages = len(depths)
+        self.deep_supervision = deep_supervision
 
         # Calculate spatial dimensions
         d, h, w = img_size[0] // patch_size[0], \
@@ -90,6 +92,17 @@ class MambaDecoder3D(nn.Module):
                 skip_proj = nn.Linear(dim // 2, dim // 2)
                 self.skip_projs.append(skip_proj)
 
+        # Deep supervision: auxiliary segmentation heads at intermediate stages
+        if deep_supervision:
+            self.aux_heads = nn.ModuleList()
+            self.aux_spatials = []
+            # Stages 0..(num_stages-2) are intermediate; final stage uses main head
+            for idx, i in enumerate(range(len(depths) - 1, 0, -1)):
+                dim = embed_dim * (2 ** i)
+                spatial = (d // (2 ** i), h // (2 ** i), w // (2 ** i))
+                self.aux_heads.append(nn.Conv3d(dim, out_channels, 1))
+                self.aux_spatials.append(spatial)
+
         # Final projection to output
         self.final_expand = nn.Sequential(
             nn.Linear(embed_dim, embed_dim * (patch_size[0] ** 3)),
@@ -107,11 +120,21 @@ class MambaDecoder3D(nn.Module):
         Returns:
             [B, out_channels, D, H, W]
         """
+        # Reset auxiliary outputs for deep supervision
+        self._aux_outputs = []
+
         # Start from bottleneck
         x = features[-1]
 
         for i, stage in enumerate(self.stages):
             x = stage(x)
+
+            # Collect auxiliary predictions for deep supervision (training only)
+            if self.deep_supervision and self.training and i < len(self.aux_heads):
+                B_aux, L_aux, C_aux = x.shape
+                ds, hs, ws = self.aux_spatials[i]
+                aux = rearrange(x, 'b (d h w) c -> b c d h w', d=ds, h=hs, w=ws)
+                self._aux_outputs.append(self.aux_heads[i](aux))
 
             if i < len(self.upsamples):
                 x = self.upsamples[i](x)

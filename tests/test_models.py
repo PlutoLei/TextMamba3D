@@ -159,16 +159,17 @@ class TestCrossScan3D:
 # =========================================================================
 
 class TestFiLMLayer:
-    def test_film_identity_init(self):
-        """FiLM with zero-init weights should act as identity: gamma=1, beta=0."""
+    def test_film_near_identity_init(self):
+        """FiLM warm-init (std=0.01) should be near-identity: gamma ≈ 1, beta ≈ 0."""
         from models.fusion import FiLMLayer
 
         film = FiLMLayer(feat_dim=64, cond_dim=32)
         x = torch.randn(2, 100, 64)
         cond = torch.randn(2, 32)
         out = film(x, cond)
-        assert torch.allclose(out, x, atol=1e-6), \
-            f"FiLM identity init failed: max diff = {(out - x).abs().max().item()}"
+        relative_diff = (out - x).abs().mean() / x.abs().mean()
+        assert relative_diff < 0.1, \
+            f"FiLM warm-init too far from identity: relative diff = {relative_diff.item():.4f}"
 
     def test_film_output_shape(self):
         """FiLM preserves input spatial shape."""
@@ -217,8 +218,8 @@ class TestMultiScaleFiLM:
         for feat, o in zip(features, out):
             assert o.shape == feat.shape
 
-    def test_multi_scale_film_identity_init(self):
-        """All FiLM layers should start as identity."""
+    def test_multi_scale_film_near_identity_init(self):
+        """All FiLM layers should start near-identity with warm init."""
         from models.fusion import MultiScaleFiLM
 
         stage_dims = [32, 64]
@@ -229,7 +230,9 @@ class TestMultiScaleFiLM:
         out = film(features, text_global)
 
         for feat, o in zip(features, out):
-            assert torch.allclose(o, feat, atol=1e-6)
+            relative_diff = (o - feat).abs().mean() / feat.abs().mean()
+            assert relative_diff < 0.1, \
+                f"MultiScaleFiLM warm-init too far from identity: {relative_diff.item():.4f}"
 
     def test_multi_scale_film_num_layers(self):
         """Number of FiLM layers should match number of stages."""

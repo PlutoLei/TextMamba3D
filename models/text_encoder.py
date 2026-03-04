@@ -61,6 +61,9 @@ class TextMambaEncoder(nn.Module):
                 for param in layer.parameters():
                     param.requires_grad = True
 
+        # Cache frozen state to avoid per-forward parameter scan
+        self._bert_frozen = not any(p.requires_grad for p in self.bert.parameters())
+
         # Project BERT 768 -> embed_dim
         self.proj = nn.Sequential(
             nn.Linear(self.BERT_HIDDEN_DIM, embed_dim),
@@ -113,9 +116,7 @@ class TextMambaEncoder(nn.Module):
 
     def _forward_pretrained(self, input_ids, attention_mask):
         """Forward with PubMedBERT backbone."""
-        with torch.no_grad() if not any(
-            p.requires_grad for p in self.bert.parameters()
-        ) else torch.enable_grad():
+        with torch.no_grad() if self._bert_frozen else torch.enable_grad():
             bert_out = self.bert(
                 input_ids=input_ids,
                 attention_mask=attention_mask,

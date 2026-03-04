@@ -76,7 +76,8 @@ def load_config(path: str) -> dict:
 
 def train_epoch(
     model, loader, criterion, optimizer, device, epoch,
-    scaler=None, use_amp=True, no_text_ratio=0.1, grad_accum=1
+    scaler=None, use_amp=True, no_text_ratio=0.1, grad_accum=1,
+    need_features=True,
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -93,14 +94,26 @@ def train_epoch(
         use_text = np.random.random() > no_text_ratio
 
         with autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp):
-            pred, img_feat, text_feat = model(
-                image,
-                text_ids if use_text else None,
-                attention_mask=attn_mask if use_text else None,
-                return_features=True,
-                use_text=use_text,
-            )
-            loss = criterion(pred, mask, img_feat, text_feat)['total']
+            if need_features:
+                pred, img_feat, text_feat = model(
+                    image,
+                    text_ids if use_text else None,
+                    attention_mask=attn_mask if use_text else None,
+                    return_features=True,
+                    use_text=use_text,
+                )
+            else:
+                pred = model(
+                    image,
+                    text_ids if use_text else None,
+                    attention_mask=attn_mask if use_text else None,
+                    return_features=False,
+                    use_text=use_text,
+                )
+                img_feat, text_feat = None, None
+            # Deep supervision: aux outputs stored in decoder during training
+            aux_preds = getattr(model.decoder, '_aux_outputs', None) or None
+            loss = criterion(pred, mask, img_feat, text_feat, aux_preds=aux_preds)['total']
             loss = loss / grad_accum  # 梯度累积：损失除以累积步数
 
         if scaler is not None:
@@ -259,6 +272,10 @@ def main():
     if use_checkpoint:
         print('Gradient checkpointing: ENABLED (saves ~30-50% GPU memory)')
 
+    deep_supervision = config['training'].get('deep_supervision', False)
+    if deep_supervision:
+        print('Deep supervision: ENABLED (aux heads at intermediate decoder stages)')
+
     model = TextMamba3D(
         img_size=tuple(config['model']['img_size']),
         in_channels=config['model']['in_channels'],
@@ -271,6 +288,7 @@ def main():
         unfreeze_text_layers=config['model'].get('unfreeze_text_layers', 0),
         use_checkpoint=use_checkpoint,
         text_model_path=text_model_path,
+        deep_supervision=deep_supervision,
     ).to(device)
 
     # Count parameters
@@ -340,13 +358,16 @@ def main():
         best_dice_no_text = checkpoint.get('best_dice_no_text', 0)
         print(f'Resumed from epoch {start_epoch}')
 
+    # 当 contrastive_weight > 0 时才需要计算特征（节省显存和计算）
+    need_features = config['loss']['contrastive_weight'] > 0
+
     # Training loop
     for epoch in range(start_epoch, config['training']['epochs']):
         # Train
         train_loss = train_epoch(
             model, train_loader, criterion, optimizer, device, epoch,
             scaler=scaler, use_amp=use_amp, no_text_ratio=args.no_text_ratio,
-            grad_accum=args.grad_accum
+            grad_accum=args.grad_accum, need_features=need_features
         )
 
         # Validate with text (standard mode)
@@ -397,8 +418,8 @@ def main():
 
         save_checkpoint('checkpoints/last.pth', include_scheduler=True)
 
-        # Early stopping (based on no-text dice)
-        if early_stopping(val_dice_no_text):
+        # Early stopping (based on best of both modes)
+        if early_stopping(max(val_dice, val_dice_no_text)):
             print(f'\nEarly stopping triggered at epoch {epoch}')
             break
 

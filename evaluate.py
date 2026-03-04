@@ -160,10 +160,12 @@ def main() -> None:
 
     # Tokenizer
     use_pretrained_text = config['model'].get('use_pretrained_text', True)
+    text_model_path = config['model'].get('text_model_path', None)
     tokenizer = None
     if use_pretrained_text:
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(TextMambaEncoder.PUBMEDBERT_NAME)
+        tokenizer_path = text_model_path or TextMambaEncoder.PUBMEDBERT_NAME
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 
     transform = get_val_transforms(tuple(config['data']['patch_size']))
     max_text_len = config['model'].get('text_max_len', 128)
@@ -199,9 +201,11 @@ def main() -> None:
         text_embed_dim=config['model']['text_embed_dim'],
         text_max_len=max_text_len,
         use_pretrained_text=use_pretrained_text,
+        unfreeze_text_layers=config['model'].get('unfreeze_text_layers', 0),
+        text_model_path=text_model_path,
     ).to(device)
 
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     model.load_state_dict(ckpt['model'])
     print(f'Loaded checkpoint from {args.checkpoint}')
 

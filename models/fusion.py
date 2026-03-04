@@ -21,14 +21,13 @@ class FiLMLayer(nn.Module):
         self.beta_proj = nn.Linear(cond_dim, feat_dim)
 
         # Bounded gating: gamma = 2*sigmoid(raw), so gamma in (0, 2).
-        # At init: raw=0 => 2*sigmoid(0)=1.0 => identity.
-        # NOTE: Incompatible with checkpoints trained with unbounded gamma
-        # (old init: bias=1, weight=0). Old checkpoints load silently but
-        # produce different outputs.
+        # Warm init: small random weights give a weak text modulation signal
+        # from the start, accelerating text-guided learning.
+        # gamma ≈ 2*sigmoid(~0) ≈ 1.0 ± 0.005, beta ≈ ± 0.005.
         nn.init.zeros_(self.gamma_proj.bias)
-        nn.init.zeros_(self.gamma_proj.weight)
+        nn.init.normal_(self.gamma_proj.weight, std=0.01)
         nn.init.zeros_(self.beta_proj.bias)
-        nn.init.zeros_(self.beta_proj.weight)
+        nn.init.normal_(self.beta_proj.weight, std=0.01)
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         """

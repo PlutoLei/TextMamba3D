@@ -29,14 +29,10 @@ class EdgeLoss(nn.Module):
 
     def get_edge_mask(self, target: torch.Tensor) -> torch.Tensor:
         target_float = target.float().unsqueeze(1)
-        # 确保 Sobel 核与输入在同一设备和类型
-        sobel_x = self.sobel_x.to(target_float.device, target_float.dtype)
-        sobel_y = self.sobel_y.to(target_float.device, target_float.dtype)
-        sobel_z = self.sobel_z.to(target_float.device, target_float.dtype)
 
-        gx = F.conv3d(target_float, sobel_x, padding=1)
-        gy = F.conv3d(target_float, sobel_y, padding=1)
-        gz = F.conv3d(target_float, sobel_z, padding=1)
+        gx = F.conv3d(target_float, self.sobel_x, padding=1)
+        gy = F.conv3d(target_float, self.sobel_y, padding=1)
+        gz = F.conv3d(target_float, self.sobel_z, padding=1)
         edge = torch.sqrt(gx**2 + gy**2 + gz**2 + 1e-8)
         edge = edge / (edge.max() + 1e-8)
         return edge

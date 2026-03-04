@@ -23,8 +23,8 @@ def tta_predict(
 ) -> torch.Tensor:
     """Test-time augmentation: average predictions over flipped inputs.
 
-    Averages logits across augmentations for mathematically correct aggregation,
-    then applies softmax to return probability maps.
+    Applies softmax per augmentation then averages probabilities (standard
+    approach in medical image segmentation, matching nnUNet convention).
 
     Attempts batched forward pass for speed; falls back to sequential on OOM.
 
@@ -83,15 +83,15 @@ def _tta_batched(model, image, text_ids, attention_mask, use_text, flip_axes):
         attention_mask=batched_attn_mask, use_text=use_text,
     )
 
-    # Split back and unflip
+    # Split back, unflip, and average probabilities
     logit_chunks = all_logits.split(B, dim=0)
     accum = torch.zeros_like(logit_chunks[0])
     for logits, axes in zip(logit_chunks, flip_axes):
         for ax in axes:
             logits = torch.flip(logits, [ax])
-        accum += logits
+        accum += F.softmax(logits, dim=1)
 
-    return F.softmax(accum / N, dim=1)
+    return accum / N
 
 
 def _tta_sequential(model, image, text_ids, attention_mask, use_text, flip_axes):
@@ -107,6 +107,7 @@ def _tta_sequential(model, image, text_ids, attention_mask, use_text, flip_axes)
         for ax in axes:
             logits = torch.flip(logits, [ax])
 
-        accum = logits if accum is None else accum + logits
+        probs = F.softmax(logits, dim=1)
+        accum = probs if accum is None else accum + probs
 
-    return F.softmax(accum / len(flip_axes), dim=1)
+    return accum / len(flip_axes)
