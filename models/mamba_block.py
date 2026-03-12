@@ -50,6 +50,7 @@ class MambaBlock(nn.Module):
         residual = x
         x = self.norm(x)
         x = self.mamba(x)
+        x = torch.clamp(x, -100, 100)  # Prevent SSM output explosion
         x = self.dropout(x)
         return x + residual
 
@@ -153,13 +154,13 @@ class BiMambaLayer(nn.Module):
 # ---------------------------------------------------------------------------
 
 class CrossScanBiMamba3DBlock(nn.Module):
-    """Cross-scan bidirectional Mamba for 3D volumes.
+    """Cross-scan Mamba for 3D volumes.
 
-    Scans bidirectionally along 3 different spatial axis orderings:
+    Scans along 3 different spatial axis orderings (forward-only):
       - D-H-W (depth-first)
       - H-W-D (height-first)
       - W-D-H (width-first)
-    Total: 6 scan directions, merged with learned projection.
+    Total: 3 scan directions, merged with learned projection.
 
     This provides comprehensive spatial coverage: tokens that are far
     apart in one ordering may be adjacent in another.
@@ -183,23 +184,16 @@ class CrossScanBiMamba3DBlock(nn.Module):
 
         # One BiMamba per axis ordering (each does fwd + bwd = 2 directions)
         self.dhw_fwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
-        self.dhw_bwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
         self.hwd_fwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
-        self.hwd_bwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
         self.wdh_fwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
-        self.wdh_bwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
 
-        # Merge 6 directions -> dim
-        self.merge = nn.Linear(dim * 6, dim)
+        # Merge 3 directions -> dim
+        self.merge = nn.Linear(dim * 3, dim)
         self.gelu = nn.GELU()
         self.dropout = nn.Dropout(dropout)
 
         # Multi-scale: 2x downsampled bidirectional scan (Multi-Scale VMamba)
-        self.use_multiscale = all(s >= 4 for s in spatial_dims)
-        if self.use_multiscale:
-            self.ms_fwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
-            self.ms_bwd = _create_ssm(dim, d_state, d_conv, expand, dropout)
-            self.ms_weight = nn.Parameter(torch.full((1,), -5.0))
+        self.use_multiscale = False
 
         # Uncertainty-aware feature gating (UD-Mamba inspired)
         # At init: bias=0 => 2*sigmoid(0)=1.0 => identity-preserving
@@ -228,47 +222,26 @@ class CrossScanBiMamba3DBlock(nn.Module):
 
         # Scan 1: D-H-W ordering (native)
         out_dhw_f = self.dhw_fwd(x)
-        out_dhw_b = self.dhw_bwd(x.flip(1)).flip(1)
 
         # Scan 2: H-W-D ordering
         x_hwd = self._reorder(x, 'd h w', 'h w d')
         out_hwd_f = self._reorder(self.hwd_fwd(x_hwd), 'h w d', 'd h w')
-        out_hwd_b = self._reorder(self.hwd_bwd(x_hwd.flip(1)).flip(1), 'h w d', 'd h w')
 
         # Scan 3: W-D-H ordering
         x_wdh = self._reorder(x, 'd h w', 'w d h')
         out_wdh_f = self._reorder(self.wdh_fwd(x_wdh), 'w d h', 'd h w')
-        out_wdh_b = self._reorder(self.wdh_bwd(x_wdh.flip(1)).flip(1), 'w d h', 'd h w')
 
-        # Merge all 6 directions
-        merged = torch.cat([
-            out_dhw_f, out_dhw_b,
-            out_hwd_f, out_hwd_b,
-            out_wdh_f, out_wdh_b,
-        ], dim=-1)
+        # Merge all 3 directions
+        merged = torch.cat([out_dhw_f, out_hwd_f, out_wdh_f], dim=-1)
         x = self.merge(merged)
         x = self.gelu(x)
+        x = torch.clamp(x, -100, 100)  # Prevent cross-scan output explosion
 
         # Uncertainty gating: 2*sigmoid range (0, 2), identity-preserving at init
         unc_gate = 2.0 * torch.sigmoid(self.uncertainty_head(x))  # [B, L, 1]
         x = x * unc_gate
 
         x = self.dropout(x)
-
-        # Multi-scale branch: 2x downsampled bidirectional scan
-        if self.use_multiscale:
-            D2, H2, W2 = D // 2, H // 2, W // 2
-            x_ms = rearrange(x, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
-            x_ms = F.adaptive_avg_pool3d(x_ms, (D2, H2, W2))
-            x_ms = rearrange(x_ms, 'b c d h w -> b (d h w) c')
-            ms_f = self.ms_fwd(x_ms)
-            ms_b = self.ms_bwd(x_ms.flip(1)).flip(1)
-            x_ms = (ms_f + ms_b) / 2
-            x_ms = rearrange(x_ms, 'b (d h w) c -> b c d h w', d=D2, h=H2, w=W2)
-            x_ms = F.interpolate(x_ms, size=(D, H, W), mode='trilinear', align_corners=False)
-            x_ms = rearrange(x_ms, 'b c d h w -> b (d h w) c')
-            alpha = torch.sigmoid(self.ms_weight)
-            x = (1 - alpha) * x + alpha * x_ms
 
         return x + residual
 

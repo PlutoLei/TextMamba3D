@@ -170,7 +170,7 @@ class MambaEncoder3D(nn.Module):
         self.downsamples = nn.ModuleList()
 
         for i, depth in enumerate(depths):
-            # CrossScan BiMamba stage (6-direction 3D scanning)
+            # CrossScan Mamba stage (3-direction 3D scanning)
             dim = embed_dim * (2 ** i)
             spatial = (d // (2 ** i), h // (2 ** i), w // (2 ** i))
             stage = CrossScanBiMamba3DLayer(

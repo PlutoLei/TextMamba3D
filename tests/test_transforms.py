@@ -14,6 +14,7 @@ import torch
 import numpy as np
 from data.transforms import (
     RandomCrop3D,
+    TumorAwareCrop3D,
     CenterCrop3D,
     RandomFlip3D,
     RandAffine3D,
@@ -578,9 +579,9 @@ class TestGetTrainTransforms:
         transforms = get_train_transforms(
             patch_size=(8, 8, 8), use_elastic=False, use_modality_dropout=False
         )
-        # Should have: RandomCrop3D, RandomFlip3D, RandAffine3D, RandGaussianNoise, RandIntensityShift
+        # Should have: TumorAwareCrop3D, RandomFlip3D, RandAffine3D, RandGaussianNoise, RandIntensityShift
         assert len(transforms.transforms) == 5
-        assert isinstance(transforms.transforms[0], RandomCrop3D)
+        assert isinstance(transforms.transforms[0], TumorAwareCrop3D)
         assert isinstance(transforms.transforms[1], RandomFlip3D)
         assert isinstance(transforms.transforms[2], RandAffine3D)
         assert isinstance(transforms.transforms[3], RandGaussianNoise)

@@ -1,0 +1,61 @@
+# configs/textbrats_a100.yaml
+# A100 40GB 优化配置 — 基于 agent 审查修正
+# 现实目标: Dice 75-80% (128³ patch 主要驱动提升)
+
+data:
+  data_dir: "./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
+  dataset_type: "textbrats"
+  patch_size: [128, 128, 128]   # 64→128: 覆盖原图 23% vs 3%
+  batch_size: 4                  # 1→4: 梯度更稳定
+  num_workers: 4                 # Colab Linux 多进程安全
+  train_ratio: 0.596             # 220/369
+  val_ratio: 0.149               # 55/369, 剩余 94 test
+
+model:
+  img_size: [128, 128, 128]
+  in_channels: 4
+  out_channels: 4
+  embed_dim: 48
+  depths: [2, 2, 2, 2]
+  dropout: 0.1
+  text_embed_dim: 256
+  text_max_len: 256
+  use_pretrained_text: true
+  unfreeze_text_layers: 2        # Unfreeze last 2 BERT layers for task adaptation
+  text_model_path: null           # Colab 从 HuggingFace 下载
+
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  edge_weight: 1.0
+  contrastive_weight: 0.0        # 关闭：文本引导当前净负面(68.48% < 68.67% no-text)
+  temperature: 0.07
+  class_weights: [0.25, 3.0, 1.0, 4.0]
+
+augmentation:
+  use_elastic: true
+  use_modality_dropout: true
+
+training:
+  epochs: 200
+  lr: 0.0001                     # 5e-5→1e-4: batch 4× 线性缩放
+  weight_decay: 0.01             # 0.05→0.01: agent 审查 0.05 过于激进
+  warmup_epochs: 10
+  patience: 40
+  gradient_accumulation: 1        # 4→1: 真实 batch=4 不需要累积; train.py 从 config 读取
+  gradient_checkpointing: true
+  deep_supervision: true
+  ds_weights: [0.2, 0.1, 0.05]   # 记录用; 实际值在 losses/__init__.py:DS_WEIGHTS
+  use_amp: true                   # bf16 on A100
+  no_text_ratio: 0.15            # 记录用; 实际由 CLI --no-text-ratio 传入
+  gradient_clip_norm: 1.0
+
+eval:
+  metrics: ["dice", "hd95"]
+  sliding_window: true            # 滑窗推理用于验证
+  sw_overlap: 0.5
+  sw_batch_size: 2                # 滑窗推理时每次处理的 patch 数
+
+experiment:
+  name: "TextMamba3D_A100_v4_multiscale"
+  description: "A100: multi-scale text fusion (stages 1,2,3) + unfreeze BERT last 2 layers"

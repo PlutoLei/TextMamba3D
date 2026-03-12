@@ -191,8 +191,8 @@ class MambaFusion(nn.Module):
         super().__init__()
 
         # Project to common dimension
-        self.img_proj = nn.Linear(img_dim, hidden_dim)
-        self.text_proj = nn.Linear(text_dim, hidden_dim)
+        self.img_proj = nn.Sequential(nn.Linear(img_dim, hidden_dim), nn.LayerNorm(hidden_dim))
+        self.text_proj = nn.Sequential(nn.Linear(text_dim, hidden_dim), nn.LayerNorm(hidden_dim))
 
         # Mamba fusion layers
         self.mamba_fusion = MambaLayer(

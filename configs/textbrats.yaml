@@ -18,10 +18,11 @@ model:
   out_channels: 4         # background, necrotic, edema, enhancing
   embed_dim: 48
   depths: [2, 2, 2, 2]
+  dropout: 0.1
   text_embed_dim: 256
   text_max_len: 256       # 增加文本长度以容纳专家描述
   use_pretrained_text: true    # Use PubMedBERT pretrained text encoder
-  unfreeze_text_layers: 2      # Unfreeze last 2 BERT layers for task adaptation (+14M params)
+  unfreeze_text_layers: 0      # Keep PubMedBERT frozen for stability
   text_model_path: "./pretrained/pubmedbert"  # Local path; set to null to download from HuggingFace
 
 loss:
@@ -41,12 +42,13 @@ augmentation:
 training:
   epochs: 300
   lr: 0.00005  # 5e-5, 从 1e-4 降低以配合小模型 + 小数据集
-  weight_decay: 0.01
+  weight_decay: 0.05
   warmup_epochs: 10
   patience: 50                  # More patience for larger dataset convergence
   gradient_accumulation: 4
   gradient_checkpointing: true  # Save ~30-50% GPU memory
-  deep_supervision: true        # Aux heads at intermediate decoder stages
+  deep_supervision: true       # Aux heads at intermediate decoder stages
+  use_amp: false
   no_text_ratio: 0.15           # 15% text-free training for robustness
   gradient_clip_norm: 1.0
 

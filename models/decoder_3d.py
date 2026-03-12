@@ -66,7 +66,7 @@ class MambaDecoder3D(nn.Module):
             dim = embed_dim * (2 ** i)
             spatial = (d // (2 ** i), h // (2 ** i), w // (2 ** i))
 
-            # CrossScan BiMamba stage (6-direction 3D scanning)
+            # CrossScan Mamba stage (3-direction 3D scanning)
             stage = CrossScanBiMamba3DLayer(
                 dim=dim,
                 depth=depths[i],

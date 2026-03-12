@@ -161,7 +161,7 @@ class TextMamba3DInference:
             use_pretrained_text=use_pretrained_text,
         ).to(self.device)
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint['model'])
         self.model.eval()
 

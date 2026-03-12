@@ -14,8 +14,8 @@ class CombinedLoss(nn.Module):
     Skips expensive computation when a loss weight is zero.
     """
 
-    # Standard geometric decay weights for deep supervision aux heads
-    DS_WEIGHTS = [0.5, 0.25, 0.125]
+    # Deep supervision weights for aux heads (modify class constant to change)
+    DS_WEIGHTS = [0.2, 0.1, 0.05]
 
     def __init__(
         self,

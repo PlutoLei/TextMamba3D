@@ -89,7 +89,7 @@ class TestBiMamba:
 
 
 # =========================================================================
-# CrossScan BiMamba 3D (6-direction scanning)
+# CrossScan Mamba 3D (3-direction scanning)
 # =========================================================================
 
 class TestCrossScan3D:
@@ -123,22 +123,22 @@ class TestCrossScan3D:
         out = block(x)
         assert out.shape == (1, D * H * W, 32)
 
-    def test_cross_scan_has_6_ssms(self):
-        """CrossScan block should have 6 SSMs (3 axes x 2 directions)."""
+    def test_cross_scan_has_3_forward_ssms(self):
+        """CrossScan block should have 3 forward-only SSMs (one per axis order)."""
         from models.mamba_block import CrossScanBiMamba3DBlock
 
         block = CrossScanBiMamba3DBlock(dim=32, spatial_dims=(4, 4, 4))
-        ssm_names = ['dhw_fwd', 'dhw_bwd', 'hwd_fwd', 'hwd_bwd', 'wdh_fwd', 'wdh_bwd']
+        ssm_names = ['dhw_fwd', 'hwd_fwd', 'wdh_fwd']
         for name in ssm_names:
             assert hasattr(block, name), f"Missing SSM: {name}"
 
     def test_cross_scan_merge_dimension(self):
-        """Merge layer should project 6*dim -> dim."""
+        """Merge layer should project 3*dim -> dim."""
         from models.mamba_block import CrossScanBiMamba3DBlock
 
         dim = 48
         block = CrossScanBiMamba3DBlock(dim=dim, spatial_dims=(4, 4, 4))
-        assert block.merge.in_features == dim * 6
+        assert block.merge.in_features == dim * 3
         assert block.merge.out_features == dim
 
     def test_cross_scan_gradient_flow(self):
@@ -489,13 +489,14 @@ class TestTextMamba3D:
         assert text_feat.shape == (1, 64)
 
     def test_return_features_no_text(self, small_model):
-        """Feature extraction without text still returns features."""
+        """Feature extraction without text returns None (no contrastive on text-free)."""
         img = torch.randn(1, 4, 16, 16, 16)
         out, img_feat, text_feat = small_model(
             img, text_ids=None, use_text=False, return_features=True,
         )
-        assert img_feat.shape == (1, 64)
-        assert text_feat.shape == (1, 64)
+        assert out.shape == (1, 4, 16, 16, 16)
+        assert img_feat is None
+        assert text_feat is None
 
     def test_gradient_checkpointing(self):
         """Model with gradient checkpointing should train normally."""
@@ -515,12 +516,9 @@ class TestTextMamba3D:
         loss.backward()
         assert out.shape == (1, 4, 16, 16, 16)
 
-    def test_default_text_embed(self, small_model):
-        """Default text embedding should be a learnable parameter."""
-        assert hasattr(small_model, 'default_text_embed')
-        assert small_model.default_text_embed.requires_grad
-        assert small_model.default_text_embed.shape[1] == small_model.text_max_len
-        assert small_model.default_text_embed.shape[2] == small_model.text_embed_dim
+    def test_no_default_text_embed(self, small_model):
+        """v3: default_text_embed removed (was v2 artifact, text-free path bypasses fusion)."""
+        assert not hasattr(small_model, 'default_text_embed')
 
 
 # =========================================================================
@@ -698,11 +696,11 @@ class TestMambaFusionExtended:
             hidden_dim=hidden_dim, depth=1,
         )
         # img_proj: img_dim -> hidden_dim
-        assert fusion.img_proj.in_features == img_dim
-        assert fusion.img_proj.out_features == hidden_dim
+        assert fusion.img_proj[0].in_features == img_dim
+        assert fusion.img_proj[0].out_features == hidden_dim
         # text_proj: text_dim -> hidden_dim
-        assert fusion.text_proj.in_features == text_dim
-        assert fusion.text_proj.out_features == hidden_dim
+        assert fusion.text_proj[0].in_features == text_dim
+        assert fusion.text_proj[0].out_features == hidden_dim
         # out_proj: hidden_dim -> img_dim
         assert fusion.out_proj.in_features == hidden_dim
         assert fusion.out_proj.out_features == img_dim

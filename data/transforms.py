@@ -5,6 +5,46 @@ import numpy as np
 from typing import Tuple
 
 
+class TumorAwareCrop3D:
+    """Tumor-centered cropping: 50% centered on tumor, 50% random.
+    
+    nnU-Net core design: ensures tumor is visible in most patches,
+    critical for small tumors in large 3D volumes.
+    """
+
+    def __init__(self, size: Tuple[int, int, int], tumor_center_prob: float = 0.5, jitter: int = 8):
+        self.size = size
+        self.tumor_center_prob = tumor_center_prob
+        self.jitter = jitter
+
+    def __call__(self, image: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        _, D, H, W = image.shape
+        td, th, tw = self.size
+
+        tumor_coords = torch.nonzero(mask > 0)  # [N, 3]
+        use_tumor = len(tumor_coords) > 0 and np.random.random() < self.tumor_center_prob
+
+        if use_tumor:
+            center = tumor_coords.float().mean(dim=0).long()  # [3]
+            jitter_d = np.random.randint(-self.jitter, self.jitter + 1)
+            jitter_h = np.random.randint(-self.jitter, self.jitter + 1)
+            jitter_w = np.random.randint(-self.jitter, self.jitter + 1)
+            d = int(center[0].item()) + jitter_d - td // 2
+            h = int(center[1].item()) + jitter_h - th // 2
+            w = int(center[2].item()) + jitter_w - tw // 2
+            d = max(0, min(d, D - td))
+            h = max(0, min(h, H - th))
+            w = max(0, min(w, W - tw))
+        else:
+            d = np.random.randint(0, max(1, D - td + 1))
+            h = np.random.randint(0, max(1, H - th + 1))
+            w = np.random.randint(0, max(1, W - tw + 1))
+
+        image = image[:, d:d+td, h:h+th, w:w+tw]
+        mask = mask[d:d+td, h:h+th, w:w+tw]
+        return image, mask
+
+
 class RandomCrop3D:
     """Random 3D crop."""
 
@@ -287,7 +327,7 @@ def get_train_transforms(
     use_modality_dropout: bool = False,
 ):
     transforms = [
-        RandomCrop3D(patch_size),
+        TumorAwareCrop3D(patch_size),
         RandomFlip3D(prob=0.5),
         RandAffine3D(rot_range=0.1, scale_range=0.1, prob=0.3),
     ]

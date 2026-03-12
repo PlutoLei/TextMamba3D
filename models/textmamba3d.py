@@ -5,11 +5,10 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .decoder_3d import MambaDecoder3D
 from .encoder_3d import MambaEncoder3D
-from .fusion import MambaFusion, MultiScaleFiLM, MultiScalePixelTextAttention
+from .fusion import MultiScalePixelTextAttention
 from .text_encoder import TextMambaEncoder
 
 
@@ -25,9 +24,8 @@ class TextMamba3D(nn.Module):
         depths: list[int] = [2, 2, 2, 2],
         patch_size: tuple[int, int, int] = (4, 4, 4),
         text_embed_dim: int = 256,
-        text_max_len: int = 128,
+        text_max_len: int = 256,
         text_depth: int = 4,
-        fusion_depth: int = 2,
         d_state: int = 16,
         dropout: float = 0.0,
         use_pretrained_text: bool = True,
@@ -64,13 +62,13 @@ class TextMamba3D(nn.Module):
             model_path=text_model_path,
         )
 
-        self.fusion = MambaFusion(
-            img_dim=bottleneck_dim,
-            text_dim=text_embed_dim,
-            hidden_dim=bottleneck_dim,
-            depth=fusion_depth,
-            d_state=d_state,
-            dropout=dropout,
+        # Multi-scale cross-attention: text guides skip connections at stages 1,2,3
+        # Stage 0 excluded (32K tokens too expensive for cross-attention)
+        stage_dims = [embed_dim * (2 ** i) for i in range(1, len(depths))]
+        self.multi_scale_attn = MultiScalePixelTextAttention(
+            stage_dims=stage_dims,     # [96, 192, 384] for embed_dim=48
+            text_dim=text_embed_dim,   # 256
+            num_heads=4,               # head_dim varies per stage
         )
 
         self.decoder = MambaDecoder3D(
@@ -85,27 +83,9 @@ class TextMamba3D(nn.Module):
             deep_supervision=deep_supervision,
         )
 
-        # Multi-scale FiLM: text guides all encoder stages, not just bottleneck
-        stage_dims = [embed_dim * (2 ** i) for i in range(len(depths))]
-        self.multi_scale_film = MultiScaleFiLM(
-            stage_dims=stage_dims,
-            text_dim=text_embed_dim,
-        )
-
-        # Pixel-level text cross-attention (DenseCLIP-inspired)
-        self.pixel_text_attn = MultiScalePixelTextAttention(
-            stage_dims=stage_dims,
-            text_dim=text_embed_dim,
-            num_heads=4,
-        )
-
         self.img_proj = nn.Sequential(
             nn.Linear(bottleneck_dim, text_embed_dim),
             nn.LayerNorm(text_embed_dim),
-        )
-
-        self.default_text_embed = nn.Parameter(
-            torch.randn(1, text_max_len, text_embed_dim) * 0.02
         )
 
     def forward(
@@ -130,48 +110,34 @@ class TextMamba3D(nn.Module):
             Segmentation output [B, out_channels, D, H, W], and optionally
             (img_feat, text_feat) for contrastive loss
         """
-        batch_size = img.shape[0]
-
         img_features = self.img_encoder(img)
-        bottleneck = img_features[-1]
 
         has_text = use_text and text_ids is not None
         if has_text:
             text_features = self.text_encoder(text_ids, attention_mask)
-        else:
-            # Normalize default_text_embed to match BERT encoder output scale (~unit variance)
-            # Without this, the 0.02-scale embed causes Mamba fusion to produce NaN
-            text_features = F.layer_norm(
-                self.default_text_embed.expand(batch_size, -1, -1),
-                [self.default_text_embed.shape[-1]],
+            # Multi-scale fusion: stages 1,2,3 get text cross-attention
+            # Stage 0 stays raw (32K tokens, too expensive for cross-attention)
+            fused = self.multi_scale_attn(
+                img_features[1:], text_features, attention_mask
             )
+            decoder_features = [img_features[0]] + fused
+        else:
+            # Bypass fusion entirely for text-free path
+            decoder_features = img_features
 
-        # Text global feature for FiLM and contrastive loss
-        text_global = (
-            self.text_encoder.get_global_feature(text_features)
-            if has_text
-            else text_features.mean(dim=1)
-        )
-
-        # Multi-scale FiLM: modulate ALL encoder features with text
-        filmed_features = self.multi_scale_film(img_features, text_global)
-
-        # Pixel-level text cross-attention on FiLM-modulated features
-        text_mask = attention_mask if has_text else None
-        filmed_features = self.pixel_text_attn(filmed_features, text_features, text_mask)
-
-        # Deep bottleneck fusion (causal Mamba)
-        fused_bottleneck = self.fusion(filmed_features[-1], text_features)
-
-        # Decoder: FiLM-modulated skip connections + fused bottleneck
-        decoder_features = filmed_features[:-1] + [fused_bottleneck]
         seg_output = self.decoder(decoder_features)
 
         if not return_features:
             return seg_output
 
-        img_global = self.img_proj(bottleneck.mean(dim=1))
-        return seg_output, img_global, text_global
+        if has_text:
+            # Contrastive: project fused bottleneck (last in decoder_features) for alignment
+            img_global = self.img_proj(decoder_features[-1].mean(dim=1))
+            text_global = self.text_encoder.get_global_feature(text_features)
+            return seg_output, img_global, text_global
+        else:
+            # No contrastive on text-free batches: return None features
+            return seg_output, None, None
 
     def forward_without_text(self, img: torch.Tensor) -> torch.Tensor:
         """Convenience method for inference without text guidance."""

@@ -4,6 +4,7 @@
 import argparse
 import math
 import os
+import shutil
 from typing import Optional
 
 import numpy as np
@@ -29,12 +30,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--config', type=str, default='configs/default.yaml')
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision')
-    parser.add_argument('--no-text-ratio', type=float, default=0.1,
-                        help='Ratio of samples trained without text')
-    parser.add_argument('--grad-accum', type=int, default=4,
-                        help='Gradient accumulation steps (default: 4 for 8GB GPU)')
+    parser.add_argument('--no-text-ratio', type=float, default=None,
+                        help='Ratio of samples trained without text (overrides config)')
+    parser.add_argument('--grad-accum', type=int, default=None,
+                        help='Gradient accumulation steps (overrides config)')
     parser.add_argument('--max-samples', type=int, default=None,
                         help='Limit training samples (e.g., 200 for quick training)')
+    parser.add_argument('--max-epochs', type=int, default=None,
+                        help='Override max epochs (e.g., 1 for smoke test)')
     return parser.parse_args()
 
 
@@ -85,7 +88,7 @@ def get_lr(epoch: int, warmup_epochs: int, base_lr: float, total_epochs: int) ->
 
 def train_epoch(
     model, loader, criterion, optimizer, device, epoch,
-    scaler=None, use_amp=True, no_text_ratio=0.1, grad_accum=1,
+    scaler=None, use_amp=False, no_text_ratio=0.1, grad_accum=1,
     need_features=True, clip_norm=1.0,
 ) -> tuple[float, float]:
     model.train()
@@ -105,13 +108,13 @@ def train_epoch(
         use_text = np.random.random() > no_text_ratio
 
         with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
-            if need_features:
+            if need_features and use_text:
                 pred, img_feat, text_feat = model(
                     image,
-                    text_ids if use_text else None,
-                    attention_mask=attn_mask if use_text else None,
+                    text_ids,
+                    attention_mask=attn_mask,
                     return_features=True,
-                    use_text=use_text,
+                    use_text=True,
                 )
             else:
                 pred = model(
@@ -126,6 +129,17 @@ def train_epoch(
             aux_preds = getattr(model.decoder, '_aux_outputs', None) or None
             loss = criterion(pred, mask, img_feat, text_feat, aux_preds=aux_preds)['total']
             loss = loss / grad_accum  # 梯度累积：损失除以累积步数
+
+        # Detect anomalously high but finite loss (indicates impending NaN)
+        # CombinedLoss clamps at 20.0; skip truly anomalous batches above 10.0
+        if loss.isfinite() and loss.item() * grad_accum > 10.0:
+            nan_count += 1
+            if nan_count <= 5:
+                print(f'[HIGH LOSS] epoch={epoch}, batch={batch_idx}, text={use_text}, '
+                      f'loss={loss.item() * grad_accum:.4f}')
+            optimizer.zero_grad()
+            pbar.set_postfix({'loss': 'HIGH', 'text': 'Y' if use_text else 'N'})
+            continue
 
         if torch.isnan(loss).any().item() or torch.isinf(loss).any().item():
             nan_count += 1
@@ -185,11 +199,11 @@ def validate(model, loader, criterion, device, use_amp=True, use_text=True) -> t
             attn_mask = None
 
         with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
-            pred, img_feat, text_feat = model(
+            pred = model(
                 image, text_ids, attention_mask=attn_mask,
-                return_features=True, use_text=use_text
+                return_features=False, use_text=use_text
             )
-            loss = criterion(pred, mask, img_feat, text_feat)['total']
+            loss = criterion(pred, mask)['total']
 
         total_loss += loss.item()
         all_dice.append(dice_score_brats_regions(pred, mask)['dice_mean'])
@@ -203,10 +217,18 @@ def main():
 
     # Device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_amp = not args.no_amp and device.type == 'cuda'
+    use_amp = config['training'].get('use_amp', False)
+    if args.no_amp:
+        use_amp = False
+    use_amp = use_amp and device.type == 'cuda'
+    # Resolve CLI overrides vs config defaults
+    no_text_ratio = args.no_text_ratio if args.no_text_ratio is not None else config['training'].get('no_text_ratio', 0.1)
+    grad_accum = args.grad_accum if args.grad_accum is not None else config['training'].get('gradient_accumulation', 1)
+
     print(f'Using device: {device}')
     print(f'Mixed precision (AMP): {use_amp}')
-    print(f'No-text training ratio: {args.no_text_ratio}')
+    print(f'No-text training ratio: {no_text_ratio}')
+    print(f'Gradient accumulation: {grad_accum}')
 
     # Data
     use_elastic = config.get('augmentation', {}).get('use_elastic', False)
@@ -319,6 +341,7 @@ def main():
         use_checkpoint=use_checkpoint,
         text_model_path=text_model_path,
         deep_supervision=deep_supervision,
+        dropout=config['model'].get('dropout', 0.0),
     ).to(device)
 
     # Count parameters
@@ -348,7 +371,7 @@ def main():
 
     # Manual LR schedule config (warmup + cosine decay)
     warmup_epochs = config['training'].get('warmup_epochs', 5)
-    total_epochs = config['training']['epochs']
+    total_epochs = args.max_epochs if args.max_epochs is not None else config['training']['epochs']
     base_lr = config['training']['lr']
     cfg_clip = config['training'].get('gradient_clip_norm', 1.0)
 
@@ -372,7 +395,7 @@ def main():
     best_dice_no_text = 0
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location=device)
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         if scaler is not None and checkpoint.get('scaler') is not None:
@@ -394,8 +417,8 @@ def main():
         # Train
         train_loss, max_grad_norm = train_epoch(
             model, train_loader, criterion, optimizer, device, epoch,
-            scaler=scaler, use_amp=use_amp, no_text_ratio=args.no_text_ratio,
-            grad_accum=args.grad_accum, need_features=need_features, clip_norm=cfg_clip
+            scaler=scaler, use_amp=use_amp, no_text_ratio=no_text_ratio,
+            grad_accum=grad_accum, need_features=need_features, clip_norm=cfg_clip
         )
 
         # Validate with text (standard mode)
@@ -443,6 +466,19 @@ def main():
             print(f'  -> New best (with-text): {best_dice:.4f}')
 
         save_checkpoint('checkpoints/last.pth')
+
+        # Colab Drive auto-backup every 10 epochs
+        drive_ckpt = os.environ.get('DRIVE_CKPT_DIR')
+        if drive_ckpt and (epoch + 1) % 10 == 0:
+            try:
+                os.makedirs(drive_ckpt, exist_ok=True)
+                for fname in ['best.pth', 'best_no_text.pth', 'last.pth']:
+                    src = f'checkpoints/{fname}'
+                    if os.path.exists(src):
+                        shutil.copy2(src, os.path.join(drive_ckpt, fname))
+                print(f'  -> Synced checkpoints to Drive (epoch {epoch})')
+            except OSError as e:
+                print(f'  [WARN] Drive sync failed: {e}')
 
         # Early stopping (based on best of both modes)
         if early_stopping(max(val_dice, val_dice_no_text)):
