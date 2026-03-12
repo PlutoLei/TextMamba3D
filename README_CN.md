@@ -1,6 +1,6 @@
 # TextMamba3D
 
-中文 | **[English](README.md)**
+[![中文版](https://img.shields.io/badge/lang-中文版-red)](./README_CN.md) | [![English](https://img.shields.io/badge/lang-English-blue)](./README.md)
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.0-ee4c2c?logo=pytorch&logoColor=white)
