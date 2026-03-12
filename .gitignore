@@ -14,12 +14,10 @@ logs/
 pretrained/
 docs/run_*/
 docs/architecture_prompt.txt
-task_plan.md
-findings.md
-progress.md
 .claude/
-nul
-mamba_install.log
 data/brats_dataset_fast.py
 training_log*.txt
-improvement_plan.md
+*.log
+nexus_state.json
+TextBraTS_data.zip
+docs/plans/
