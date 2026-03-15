@@ -28,7 +28,7 @@ loss:
   dice_weight: 1.0
   ce_weight: 1.0
   edge_weight: 1.0
-  contrastive_weight: 0.0        # 关闭：文本引导当前净负面(68.48% < 68.67% no-text)
+  contrastive_weight: 0.05
   temperature: 0.07
   class_weights: [0.25, 3.0, 1.0, 4.0]
 
@@ -41,6 +41,7 @@ training:
   lr: 0.0001                     # 5e-5→1e-4: batch 4× 线性缩放
   weight_decay: 0.01             # 0.05→0.01: agent 审查 0.05 过于激进
   warmup_epochs: 10
+  contrastive_warmup_epochs: 30
   patience: 40
   gradient_accumulation: 1        # 4→1: 真实 batch=4 不需要累积; train.py 从 config 读取
   gradient_checkpointing: true
@@ -57,5 +58,5 @@ eval:
   sw_batch_size: 2                # 滑窗推理时每次处理的 patch 数
 
 experiment:
-  name: "TextMamba3D_A100_v4_multiscale"
+  name: "TextMamba3D_A100_v4.2_fg_contrastive"
   description: "A100: multi-scale text fusion (stages 1,2,3) + unfreeze BERT last 2 layers"

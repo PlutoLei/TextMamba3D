@@ -21,3 +21,4 @@ training_log*.txt
 nexus_state.json
 TextBraTS_data.zip
 docs/plans/
+docs/papers/**/*.pdf

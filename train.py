@@ -109,7 +109,7 @@ def train_epoch(
 
         with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
             if need_features and use_text:
-                pred, img_feat, text_feat = model(
+                pred, img_feat, text_feat, pixel_feat = model(
                     image,
                     text_ids,
                     attention_mask=attn_mask,
@@ -124,10 +124,18 @@ def train_epoch(
                     return_features=False,
                     use_text=use_text,
                 )
-                img_feat, text_feat = None, None
+                img_feat, text_feat, pixel_feat = None, None, None
             # Deep supervision: aux outputs stored in decoder during training
             aux_preds = getattr(model.decoder, '_aux_outputs', None) or None
-            loss = criterion(pred, mask, img_feat, text_feat, aux_preds=aux_preds)['total']
+            loss = criterion(
+                pred,
+                mask,
+                img_feat,
+                text_feat,
+                pixel_feat=pixel_feat,
+                mask_orig=mask,
+                aux_preds=aux_preds,
+            )['total']
             loss = loss / grad_accum  # 梯度累积：损失除以累积步数
 
         # Detect anomalously high but finite loss (indicates impending NaN)
@@ -214,6 +222,8 @@ def validate(model, loader, criterion, device, use_amp=True, use_text=True) -> t
 def main():
     args = parse_args()
     config = load_config(args.config)
+    contrastive_warmup = config['training'].get('contrastive_warmup_epochs', 30)
+    base_contrastive_weight = config['loss'].get('contrastive_weight', 0.0)
 
     # Device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -302,6 +312,12 @@ def main():
         train_dataset = Subset(train_dataset, indices)
         print(f'Limited training to {args.max_samples} samples')
 
+    if len(train_dataset) == 0:
+        raise RuntimeError(
+            f"No training samples found in {config['data']['data_dir']}. "
+            "Check that data has been extracted to the correct path."
+        )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['data']['batch_size'],
@@ -359,6 +375,8 @@ def main():
         edge_weight=config['loss']['edge_weight'],
         contrastive_weight=config['loss']['contrastive_weight'],
         temperature=config['loss']['temperature'],
+        feat_dim=config['model']['embed_dim'] * (2 ** (len(config['model']['depths']) - 1)),
+        text_dim=config['model']['text_embed_dim'],
         class_weights=class_weights,
     ).to(device)
 
@@ -405,11 +423,18 @@ def main():
         best_dice_no_text = checkpoint.get('best_dice_no_text', 0)
         print(f'Resumed from epoch {start_epoch}')
 
-    # 当 contrastive_weight > 0 时才需要计算特征（节省显存和计算）
-    need_features = config['loss']['contrastive_weight'] > 0
-
     # Training loop
-    for epoch in range(start_epoch, config['training']['epochs']):
+    for epoch in range(start_epoch, total_epochs):
+        if epoch < contrastive_warmup:
+            criterion.contrastive_weight = 0.0
+        elif epoch < contrastive_warmup * 2:
+            criterion.contrastive_weight = (
+                base_contrastive_weight * (epoch - contrastive_warmup) / contrastive_warmup
+            )
+        else:
+            criterion.contrastive_weight = base_contrastive_weight
+        need_features = criterion.contrastive_weight > 0
+
         current_lr = get_lr(epoch, warmup_epochs, base_lr, total_epochs)
         for param_group in optimizer.param_groups:
             param_group['lr'] = current_lr
@@ -437,10 +462,12 @@ def main():
         writer.add_scalar('Dice/val_no_text', val_dice_no_text, epoch)
         writer.add_scalar('LR', current_lr, epoch)
         writer.add_scalar('GradNorm/max', max_grad_norm, epoch)
+        writer.add_scalar('Loss/contrastive_weight', criterion.contrastive_weight, epoch)
 
         print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
         print(f'  With text:    val_loss={val_loss:.4f}, val_dice={val_dice:.4f}')
         print(f'  Without text: val_loss={val_loss_no_text:.4f}, val_dice={val_dice_no_text:.4f}')
+        print(f'  Contrastive weight: {criterion.contrastive_weight:.4f}')
 
         os.makedirs('checkpoints', exist_ok=True)
 

@@ -19,7 +19,7 @@ v3 baseline (A100, patch 128³):
 
 ## 实施步骤
 
-### Step 1: Multi-Scale Fusion + Unfreeze BERT ✅ 已实施
+### Step 1: Multi-Scale Fusion + Unfreeze BERT ✅ 完成
 
 **变更：**
 - `models/textmamba3d.py`: bottleneck-only → MultiScalePixelTextAttention (stages 1,2,3)
@@ -30,7 +30,14 @@ v3 baseline (A100, patch 128³):
 
 **新参数量：** ~38M trainable (vs 24M baseline)
 
-**状态：** 代码已修改，等待同步到 Colab 训练
+**训练结果（2026-03-12）：**
+- 166 epochs, early stopping
+- Best val_dice: with-text 0.8847, no-text 0.8823
+- Full-volume evaluation (95 cases, sliding window):
+  - With text: ET=0.7663, TC=0.8411, WT=0.8875, Mean=0.8316
+  - No text:   ET=0.7679, TC=0.8415, WT=0.8860, Mean=0.8318
+- **结论：** 文本引导从净负面（v3: -0.36%）改善至接近中性（-0.02%），但仍无显著贡献
+- **Checkpoint：** `Drive/TextMamba3D/checkpoints/best_v4.pth`
 
 ### Step 2: Pixel Contrastive + Semantic Matching Loss（待实施）
 
@@ -54,7 +61,7 @@ v3 baseline (A100, patch 128³):
 | 实验 | 变更 | Dice (text) | Dice (no-text) | Delta | 状态 |
 |------|------|-------------|----------------|-------|------|
 | v3 Baseline | — | 88.15% | 88.51% | -0.36% | ✅ 完成 |
-| v4 Multi-scale + Unfreeze | Step 1 | ? | ? | ? | 待训练 |
+| v4 Multi-scale + Unfreeze | Step 1 | 83.16% | 83.18% | -0.02% | ✅ 完成 |
 | v5 + Pixel Contrastive | Step 1+2 | ? | ? | ? | 待实施 |
 | v6 + Class-Conditional | Step 1+2+3 | ? | ? | ? | 待实施 |
 | v7 + Text Augmentation | All | ? | ? | ? | 待实施 |

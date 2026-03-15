@@ -168,6 +168,156 @@ class MultiScalePixelTextAttention(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Sequential Cross-Attention (TextBraTS-inspired, MICCAI 2025)
+# ---------------------------------------------------------------------------
+
+class SequentialCrossAttention(nn.Module):
+    """TextBraTS-style Sequential Cross-Attention for text-guided segmentation.
+
+    Two-step cross-attention that reverses the Q/KV direction:
+      Step 1 (T2I): Text=Q, Image=KV -> refined features (text-length)
+      Step 2 (I2T): Image=Q, Refined=KV -> joint features (image-length)
+
+    This ensures text actively "asks" the image where its descriptions are
+    relevant, rather than the image passively querying text tokens.
+    """
+
+    def __init__(self, feat_dim: int, text_dim: int, num_heads: int = 4):
+        super().__init__()
+        assert feat_dim % num_heads == 0, \
+            f"feat_dim ({feat_dim}) must be divisible by num_heads ({num_heads})"
+        self.num_heads = num_heads
+        self.head_dim = feat_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        # Project text to image feature dimension
+        self.text_proj = nn.Sequential(
+            nn.Linear(text_dim, feat_dim),
+            nn.LayerNorm(feat_dim),
+        )
+
+        # Step 1: Text queries Image (T2I)
+        self.t2i_norm_q = nn.LayerNorm(feat_dim)
+        self.t2i_norm_kv = nn.LayerNorm(feat_dim)
+        self.t2i_q = nn.Linear(feat_dim, feat_dim)
+        self.t2i_k = nn.Linear(feat_dim, feat_dim)
+        self.t2i_v = nn.Linear(feat_dim, feat_dim)
+        self.t2i_out = nn.Sequential(
+            nn.Linear(feat_dim, feat_dim),
+            nn.LayerNorm(feat_dim),
+        )
+
+        # Step 2: Image queries Refined (I2T)
+        self.i2t_norm_q = nn.LayerNorm(feat_dim)
+        self.i2t_norm_kv = nn.LayerNorm(feat_dim)
+        self.i2t_q = nn.Linear(feat_dim, feat_dim)
+        self.i2t_k = nn.Linear(feat_dim, feat_dim)
+        self.i2t_v = nn.Linear(feat_dim, feat_dim)
+        self.i2t_out = nn.Linear(feat_dim, feat_dim)
+
+        # Zero-init Step 2 output for identity-preserving start
+        nn.init.zeros_(self.i2t_out.weight)
+        nn.init.zeros_(self.i2t_out.bias)
+
+    def _multi_head_attn(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Multi-head attention computation.
+
+        Args:
+            q: [B, Nq, D] queries
+            k: [B, Nk, D] keys
+            v: [B, Nk, D] values
+            mask: [B, Nk] optional mask (1=valid, 0=pad), applied on K dimension
+        Returns:
+            [B, Nq, D] attention output
+        """
+        B, Nq, D = q.shape
+        H, hd = self.num_heads, self.head_dim
+
+        q = q.reshape(B, Nq, H, hd).transpose(1, 2)   # [B, H, Nq, hd]
+        k = k.reshape(B, -1, H, hd).transpose(1, 2)    # [B, H, Nk, hd]
+        v = v.reshape(B, -1, H, hd).transpose(1, 2)    # [B, H, Nk, hd]
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale   # [B, H, Nq, Nk]
+
+        if mask is not None:
+            attn = attn.masked_fill(
+                mask.unsqueeze(1).unsqueeze(2) == 0,     # [B, 1, 1, Nk]
+                float('-inf'),
+            )
+
+        attn = attn.softmax(dim=-1)
+        attn = torch.nan_to_num(attn)  # guard against all-masked rows
+
+        out = (attn @ v).transpose(1, 2).reshape(B, Nq, D)
+        return out
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        text_feat: torch.Tensor,
+        text_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            x: [B, N, D] spatial feature tokens (image)
+            text_feat: [B, M, D_text] text token features
+            text_mask: [B, M] optional mask (1=valid, 0=pad)
+        Returns:
+            [B, N, D] text-guided features (same shape as input)
+        """
+        residual = x
+
+        # Project text to image feature space
+        text_proj = self.text_proj(text_feat)  # [B, M, D]
+
+        # Step 1: Text=Q, Image=KV
+        # Text asks: "where in the image are my descriptions relevant?"
+        q1 = self.t2i_q(self.t2i_norm_q(text_proj))    # [B, M, D]
+        k1 = self.t2i_k(self.t2i_norm_kv(x))           # [B, N, D]
+        v1 = self.t2i_v(self.t2i_norm_kv(x))            # [B, N, D]
+        refined = self.t2i_out(self._multi_head_attn(q1, k1, v1))
+        # refined: [B, M, D] — text-length, contains image info selected by text
+
+        # Step 2: Image=Q, Refined=KV
+        # Image enhances itself using text-selected visual information
+        q2 = self.i2t_q(self.i2t_norm_q(x))             # [B, N, D]
+        k2 = self.i2t_k(self.i2t_norm_kv(refined))      # [B, M, D]
+        v2 = self.i2t_v(self.i2t_norm_kv(refined))       # [B, M, D]
+        joint = self.i2t_out(self._multi_head_attn(q2, k2, v2, text_mask))
+        # joint: [B, N, D] — image-length
+
+        return residual + joint
+
+
+class MultiScaleSeqCA(nn.Module):
+    """Apply Sequential Cross-Attention at multiple encoder scales."""
+
+    def __init__(self, stage_dims: list[int], text_dim: int, num_heads: int = 4):
+        super().__init__()
+        self.attn_layers = nn.ModuleList([
+            SequentialCrossAttention(dim, text_dim, num_heads=num_heads)
+            for dim in stage_dims
+        ])
+
+    def forward(
+        self,
+        features: list[torch.Tensor],
+        text_feat: torch.Tensor,
+        text_mask: torch.Tensor | None = None,
+    ) -> list[torch.Tensor]:
+        return [
+            attn(feat, text_feat, text_mask)
+            for attn, feat in zip(self.attn_layers, features)
+        ]
+
+
+# ---------------------------------------------------------------------------
 # MambaFusion: Deep bottleneck fusion via causal Mamba
 # ---------------------------------------------------------------------------
 
