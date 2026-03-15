@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .dice_loss import DiceLoss, BRATS_CLASS_WEIGHTS
 from .edge_loss import EdgeLoss
-from .contrastive_loss import ContrastiveLoss
+from .contrastive_loss import ContrastiveLoss, ForegroundContrastiveLoss
 
 
 class CombinedLoss(nn.Module):
@@ -24,8 +24,10 @@ class CombinedLoss(nn.Module):
         edge_weight: float = 1.0,
         contrastive_weight: float = 0.5,
         temperature: float = 0.07,
+        feat_dim: int = 384,
+        text_dim: int = 256,
         class_weights: list[float] | None = None,
-    ):
+    ) -> None:
         super().__init__()
         self.dice_weight = dice_weight
         self.ce_weight = ce_weight
@@ -35,6 +37,11 @@ class CombinedLoss(nn.Module):
         self.dice_loss = DiceLoss(class_weights=class_weights)
         self.edge_loss = EdgeLoss()
         self.contrastive_loss = ContrastiveLoss(temperature)
+        self.fg_contrastive_loss = ForegroundContrastiveLoss(
+            temperature=temperature,
+            feat_dim=feat_dim,
+            text_dim=text_dim,
+        )
 
         # CE class weights (normalized for cross_entropy)
         if class_weights is not None:
@@ -49,7 +56,17 @@ class CombinedLoss(nn.Module):
         """Return a zero scalar on the same device as pred."""
         return pred.new_zeros(())
 
-    def forward(self, pred, target, img_feat=None, text_feat=None, aux_preds=None) -> dict:
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        img_feat: torch.Tensor | None = None,
+        text_feat: torch.Tensor | None = None,
+        pixel_feat: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+        mask_orig: torch.Tensor | None = None,
+        aux_preds: list[torch.Tensor] | None = None,
+    ) -> dict[str, torch.Tensor]:
         losses = {}
 
         # Only compute losses with nonzero weights
@@ -65,7 +82,19 @@ class CombinedLoss(nn.Module):
             self.edge_loss(pred, target) if self.edge_weight else self._zero(pred)
         )
 
-        if self.contrastive_weight and img_feat is not None and text_feat is not None:
+        contrastive_mask = mask if mask is not None else mask_orig
+        if (
+            self.contrastive_weight
+            and pixel_feat is not None
+            and text_feat is not None
+            and contrastive_mask is not None
+        ):
+            losses['contrastive'] = self.fg_contrastive_loss(
+                pixel_feat,
+                text_feat,
+                contrastive_mask,
+            )
+        elif self.contrastive_weight and img_feat is not None and text_feat is not None:
             losses['contrastive'] = self.contrastive_loss(img_feat, text_feat)
         else:
             losses['contrastive'] = self._zero(pred)

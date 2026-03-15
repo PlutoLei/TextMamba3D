@@ -95,7 +95,12 @@ class TextMamba3D(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         return_features: bool = False,
         use_text: bool = True,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor | tuple[
+        torch.Tensor,
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+    ]:
         """
         Forward pass for text-guided 3D segmentation.
 
@@ -108,7 +113,7 @@ class TextMamba3D(nn.Module):
 
         Returns:
             Segmentation output [B, out_channels, D, H, W], and optionally
-            (img_feat, text_feat) for contrastive loss
+            (img_feat, text_feat, pixel_feat) for contrastive loss
         """
         img_features = self.img_encoder(img)
 
@@ -132,12 +137,13 @@ class TextMamba3D(nn.Module):
 
         if has_text:
             # Contrastive: project fused bottleneck (last in decoder_features) for alignment
-            img_global = self.img_proj(decoder_features[-1].mean(dim=1))
+            pixel_feat = decoder_features[-1]
+            img_global = self.img_proj(pixel_feat.mean(dim=1))
             text_global = self.text_encoder.get_global_feature(text_features)
-            return seg_output, img_global, text_global
+            return seg_output, img_global, text_global, pixel_feat
         else:
             # No contrastive on text-free batches: return None features
-            return seg_output, None, None
+            return seg_output, None, None, None
 
     def forward_without_text(self, img: torch.Tensor) -> torch.Tensor:
         """Convenience method for inference without text guidance."""
