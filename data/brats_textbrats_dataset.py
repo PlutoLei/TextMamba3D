@@ -41,6 +41,8 @@ class TextBraTSDataset(Dataset):
         train_ratio: float = 0.8,  # 训练集比例
         val_ratio: float = 0.0,  # 验证集比例（0 = 用 1-train_ratio）
         seed: int = 42,
+        et_enriched: bool = False,  # 是否启用 ET-enriched 文本
+        enriched_prob: float = 0.5,  # 训练时使用 enriched 文本的概率
     ):
         self.data_dir = data_dir
         self.split = split
@@ -48,6 +50,8 @@ class TextBraTSDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_text_len = max_text_len
         self.use_text_features = use_text_features
+        self.et_enriched = et_enriched
+        self.enriched_prob = enriched_prob
 
         # Find all cases and split
         all_cases = self._find_cases()
@@ -136,6 +140,14 @@ class TextBraTSDataset(Dataset):
         else:
             return "Brain MRI scan with tumor."  # Fallback
 
+    def _load_enriched_text(self, case_dir: str, case_name: str) -> Optional[str]:
+        """Load ET-enriched text description generated from T1ce image."""
+        path = os.path.join(case_dir, f"{case_name}_et_enriched.txt")
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        return None
+
     def _load_text_features(self, case_dir: str, case_name: str) -> Optional[np.ndarray]:
         """Load pre-computed text features if available."""
         npy_file = os.path.join(case_dir, f"{case_name}_flair_text.npy")
@@ -198,7 +210,22 @@ class TextBraTSDataset(Dataset):
             image, mask = self.transform(image, mask)
 
         # Load expert text (NO information leakage!)
-        text = self._load_text(case_dir, case_name)
+        original_text = self._load_text(case_dir, case_name)
+
+        # LaCLIP stochastic selection: enriched text from T1ce image features
+        if self.et_enriched:
+            enriched = self._load_enriched_text(case_dir, case_name)
+            if self.split == 'train':
+                # Training: 50% original, 50% enriched (concatenated)
+                if enriched and np.random.random() < self.enriched_prob:
+                    text = original_text + " " + enriched
+                else:
+                    text = original_text
+            else:
+                # Val/Test: always use enriched if available
+                text = (original_text + " " + enriched) if enriched else original_text
+        else:
+            text = original_text
 
         # Tokenize text
         if self.tokenizer:
@@ -244,6 +271,8 @@ def get_textbrats_dataloaders(
     tokenizer=None,
     max_text_len: int = 128,
     train_ratio: float = 0.8,
+    et_enriched: bool = False,
+    enriched_prob: float = 0.5,
 ):
     """Create train and validation dataloaders for TextBraTS."""
     from torch.utils.data import DataLoader
@@ -255,6 +284,8 @@ def get_textbrats_dataloaders(
         tokenizer=tokenizer,
         max_text_len=max_text_len,
         train_ratio=train_ratio,
+        et_enriched=et_enriched,
+        enriched_prob=enriched_prob,
     )
 
     val_dataset = TextBraTSDataset(
@@ -264,6 +295,8 @@ def get_textbrats_dataloaders(
         tokenizer=tokenizer,
         max_text_len=max_text_len,
         train_ratio=train_ratio,
+        et_enriched=et_enriched,
+        enriched_prob=enriched_prob,
     )
 
     train_loader = DataLoader(

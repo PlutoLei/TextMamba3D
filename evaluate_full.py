@@ -192,6 +192,8 @@ def main():
         max_text_len=model_cfg.get('text_max_len', 256),
         train_ratio=data_cfg.get('train_ratio', 0.596),
         val_ratio=data_cfg.get('val_ratio', 0.149),
+        et_enriched=data_cfg.get('et_enriched', False),
+        enriched_prob=data_cfg.get('enriched_prob', 0.5),
     )
 
     patch_size = tuple(config['data']['patch_size'])

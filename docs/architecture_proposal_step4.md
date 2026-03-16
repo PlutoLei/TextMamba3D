@@ -1,6 +1,18 @@
 # TextMamba3D Step 4 Architecture Proposal: Text Guidance Effectiveness
 
 > 基于 research_summary_step4.md，2026-03-13
+>
+> ⚠️ **部分过时（2026-03-15）：** 本文档设计于 v4.1 (-0.02% delta) 之后。v4.3 已测试 Module B/C/D/E 组合并失败 (-0.26%)，v4.4 SeqCA 已实现 +0.55% 正向 delta。各模块状态：
+>
+> | 模块 | 状态 | 说明 |
+> |------|------|------|
+> | **A: Knowledge-Enriched Text** | ✅ 仍有效 | 当前最高优先级，解决 ET 文本语义缺失 |
+> | B: PWAM | ❌ 已放弃 | v4.3 实测乘法融合放大噪声，SeqCA 已替代 |
+> | C: Text-to-Voxel Loss | ❌ 已放弃 | v4.3 实测无效（权重 0.1 太弱 + 3D kernel 膨胀） |
+> | D: Text-Necessity Loss | ❌ 已放弃 | v4.4 文本已在贡献 (+0.55%)，不再需要强制依赖 |
+> | E: Embedding Perturbation | 🔄 需修订 | 输出层扰动无效，应改为 LaPael 式早期层扰动 |
+>
+> 最新计划见 `text_guidance_improvement_plan.md`。本文档保留作为设计参考和实验日志。
 
 ## 1. 设计目标
 

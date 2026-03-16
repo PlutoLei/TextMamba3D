@@ -1,0 +1,67 @@
+# configs/textbrats_v7.yaml
+# V4.5: ET-Enriched Text + LaCLIP Stochastic Selection
+# 基于 textbrats_a100.yaml (V4.2/V4.4), 仅新增 ET enrichment 相关字段
+# 架构不变 (SeqCA), 仅文本输入变化
+
+data:
+  data_dir: "./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
+  dataset_type: "textbrats"
+  patch_size: [128, 128, 128]
+  batch_size: 4
+  num_workers: 4
+  train_ratio: 0.596             # 220/369
+  val_ratio: 0.149               # 55/369, 剩余 94 test
+  et_enriched: true              # NEW: 启用 ET-enriched 文本
+  enriched_prob: 0.5             # NEW: LaCLIP stochastic selection 概率
+
+model:
+  img_size: [128, 128, 128]
+  in_channels: 4
+  out_channels: 4
+  embed_dim: 48
+  depths: [2, 2, 2, 2]
+  dropout: 0.1
+  text_embed_dim: 256
+  text_max_len: 256              # 模型端保持 256 (已足够)
+  use_pretrained_text: true
+  unfreeze_text_layers: 2
+  text_model_path: null
+
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  edge_weight: 1.0
+  contrastive_weight: 0.05
+  temperature: 0.07
+  class_weights: [0.25, 3.0, 1.0, 4.0]
+
+augmentation:
+  use_elastic: true
+  use_modality_dropout: true
+
+training:
+  epochs: 200
+  lr: 0.0001
+  weight_decay: 0.01
+  warmup_epochs: 10
+  contrastive_warmup_epochs: 30
+  patience: 40
+  gradient_accumulation: 1
+  gradient_checkpointing: true
+  deep_supervision: true
+  ds_weights: [0.2, 0.1, 0.05]
+  use_amp: true
+  no_text_ratio: 0.15
+  gradient_clip_norm: 1.0
+  # NOTE: dataset tokenizer uses model.text_max_len (256), not this field
+  # 拼接后文本约 ~100 tokens, 256 足够
+
+eval:
+  metrics: ["dice", "hd95"]
+  sliding_window: true
+  sw_overlap: 0.5
+  sw_batch_size: 2
+
+experiment:
+  name: "TextMamba3D_A100_v4.5_et_enriched"
+  description: "V4.5: SeqCA + ET-Enriched Text from T1ce + LaCLIP stochastic selection (p=0.5)"

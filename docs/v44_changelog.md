@@ -110,14 +110,18 @@ attention map 额外占用 ~73MB（bs=4, bf16），A100 40GB 完全可行。
 | epochs | 300 | 200 |
 | patience | 50 | 40 |
 
-## 7. 后续计划
+## 7. 后续计划（基于 v4.4 训练结果更新）
 
-| Phase | 变更 | 预期效果 | 依赖 |
+v4.4 已实现 +0.55% 正向 delta（TC +1.05%, WT +0.74%），**ET -0.16% 是当前唯一短板**。
+
+| Phase | 变更 | 预期效果 | 状态 |
 |-------|------|---------|------|
-| 1 (当前) | SeqCA (Text=Q) | delta: -0.02% → 正向 | 独立 |
-| 2 | +ForegroundContrastiveLoss | 额外 +0.2~0.5% | Phase 1 |
-| 3 | +TextBraTS 结构化文本 | ET 重点改善 | Phase 1 |
-| 4 | Train/test protocol 对齐 | 缩小 val/test gap | 独立 |
+| 1 | SeqCA (Text=Q) | delta: +0.55% ✅ | ✅ 完成 |
+| 2 | ET-Enriched Text（从 mask 提取 ET 特征 → 模板化文本） | ET delta 转正 | 下一步 |
+| 3 | LaPael 式早期层 embedding 扰动 | 文本多样性 | 待定 |
+| 4 | ForegroundContrastiveLoss（锦上添花） | 额外 +0.2~0.5% | 可选 |
+
+**已放弃：** PWAM（v4.3 退步）、TextNecessityLoss（v4.3 无效）、TextToVoxelLoss（v4.3 无效）。详见 `experiment_log.md`。
 
 ## 8. Checkpoint 不兼容
 

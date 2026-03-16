@@ -1,6 +1,8 @@
 # TextMamba3D Step 4 Research Summary: Text Guidance Effectiveness
 
 > 基于 56K 论文知识图谱搜索 + 科学头脑风暴 + 3 篇核心论文深读，2026-03-13
+>
+> ⚠️ **推荐方案部分过时（2026-03-15）：** 第 5 节推荐的 PWAM 已在 v4.3 中验证失败。v4.4 SeqCA 已实现 +0.55% delta。文献调研和分析仍有参考价值，但推荐方案需参考 `text_guidance_improvement_plan.md` 的修订版。
 
 ## 1. 问题定义
 

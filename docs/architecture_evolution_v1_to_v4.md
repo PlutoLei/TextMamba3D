@@ -17,7 +17,7 @@ BraTS2020 数据集包含 369 例多模态 MRI（T1, T1ce, T2, FLAIR）和对应
 | V4.1 | A100 40GB | 128³ | 48 | 83.16% | -0.02% | 历史最佳 |
 | V4.2 | A100 40GB | 128³ | 48 | — | — | 未训练 |
 | V4.3 | A100 40GB | 128³ | 48 | 83.19% | -0.26% | 退步 |
-| V4.4 | A100 40GB | 128³ | 48 | — | — | 待训练 |
+| V4.4 | A100 40GB | 128³ | 48 | 83.43% | **+0.55%** | ✅ 首次正向 |
 
 演进主线：
 
@@ -32,8 +32,8 @@ V4.2: 加入前景对比损失 + warmup → 未训练
  ↓
 V4.3: PWAM 乘法融合 + 4 个辅助模块 → 退步 (-0.26%)
  ↓ 教训：乘法融合在低质量文本上放大噪声；过度复杂化
-V4.4: SeqCA (Text=Q) 翻转 Q/KV 方向 → 待训练
- ↓ 基于 TextBraTS MICCAI'25 同数据集 +1.5% 验证
+V4.4: SeqCA (Text=Q) 翻转 Q/KV 方向 → ✅ +0.55% 首次正向！
+ ↓ TC +1.05%, WT +0.74%, ET -0.16% (ET 文本缺语义)
 ```
 
 ## 3. V2：FiLM + CausalMambaFusion
@@ -380,19 +380,26 @@ V4.1 → V4.4 的改动极小（仅 2 行 import + 148 行新类），遵循"一
 | configs/textbrats_v6.yaml | 新建 | 新文件 |
 | TextMamba3D_A100_V4.4.ipynb | 新建 Colab notebook | 18 cells |
 
-### 12.4 预期效果
+### 12.4 训练配置
 
-- Text delta: -0.02% → 正向（基于 TextBraTS 同数据集验证 +1.5%）
-- ET Dice 改善（V4.3 退步最大的指标）
-- VRAM 增量 ~73MB（attention maps），A100 40GB 无压力
+与 V4.1 相同（textbrats_v6.yaml），200 epochs, lr=1e-4, bs=4, contrastive_weight=0.0（隔离 SeqCA 效果）。
 
-### 12.5 训练配置
+### 12.5 结果（2026-03-15）
 
-与 V4.1 相同（textbrats_v6.yaml 基于 textbrats_a100.yaml），200 epochs, lr=1e-4, bs=4, contrastive_weight=0.0（Phase 1 隔离 SeqCA 效果）。
+200 epochs (0-150 + 151-199 resume), A100 40GB
 
-### 12.6 结果
+**Full-volume evaluation（95 test cases，sliding window）：**
 
-待训练。
+| 指标 | With Text | No Text | Delta |
+|------|-----------|---------|-------|
+| ET | 0.7630 ± 0.2164 | 0.7646 ± 0.2127 | -0.16% |
+| TC | 0.8512 ± 0.1494 | 0.8407 ± 0.1635 | **+1.05%** |
+| WT | 0.8887 ± 0.0722 | 0.8813 ± 0.0781 | **+0.74%** |
+| **Mean** | **0.8343** | **0.8288** | **+0.55%** |
+
+**分析：** **首次实现正向 text guidance delta。** TC/WT 显著受益于 Text=Q 方向翻转，验证了 TextBraTS 的核心洞察。但 ET 仍轻微负面 (-0.16%)，原因：文本描述缺乏 ET 特异性语义 + Stage 0 无融合。
+
+**Checkpoint：** `Drive/TextMamba3D/checkpoints/best_v4.4.pth`
 
 ---
 
@@ -407,4 +414,4 @@ V4.1 → V4.4 的改动极小（仅 2 行 import + 148 行新类），遵循"一
 | contrastive | 0.0 | 0.0 | 0.0 | 0.05 | 0.0 | 0.0 |
 | epochs | 300 | 200 | 200 | 200 | 300 | 200 |
 | unfreeze_text | 0 | 0 | 2 | 2 | 2 | 2 |
-| **delta** | **-0.19%** | **-0.36%** | **-0.02%** | **待训练** | **-0.26%** | **待训练** |
+| **delta** | **-0.19%** | **-0.36%** | **-0.02%** | **待训练** | **-0.26%** | **+0.55%** ✅ |
