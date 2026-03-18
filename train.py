@@ -219,6 +219,25 @@ def validate(model, loader, criterion, device, use_amp=True, use_text=True) -> t
     return total_loss / len(loader), np.mean(all_dice)
 
 
+@torch.no_grad()
+def log_gate_values(model, writer, epoch):
+    """Log TextScaleGate sigmoid values to TensorBoard."""
+    text_gate = getattr(model, 'text_gate', None)
+    if text_gate is None:
+        return
+    gate_values = {}
+    for i, gate in enumerate(text_gate.gates):
+        bias = gate.gate_proj.bias.item()
+        gate_val = torch.sigmoid(torch.tensor(bias)).item()
+        scale_name = f'scale_{i+1}'
+        gate_values[scale_name] = gate_val
+        writer.add_scalar(f'Gate/{scale_name}_bias', bias, epoch)
+        writer.add_scalar(f'Gate/{scale_name}_sigmoid', gate_val, epoch)
+    vals = [f'{k}={v:.4f}' for k, v in gate_values.items()]
+    print(f'  Gate values: {", ".join(vals)}')
+    return gate_values
+
+
 def main():
     args = parse_args()
     config = load_config(args.config)
@@ -472,6 +491,8 @@ def main():
         writer.add_scalar('LR', current_lr, epoch)
         writer.add_scalar('GradNorm/max', max_grad_norm, epoch)
         writer.add_scalar('Loss/contrastive_weight', criterion.contrastive_weight, epoch)
+        # Log TextScaleGate values (V4.6)
+        log_gate_values(model, writer, epoch)
 
         print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
         print(f'  With text:    val_loss={val_loss:.4f}, val_dice={val_dice:.4f}')
