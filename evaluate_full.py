@@ -3,11 +3,13 @@
 
 import argparse
 import os
+from itertools import product
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
+from scipy.ndimage import label as ndimage_label
 from torch.amp import autocast
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -27,7 +29,11 @@ def parse_args():
     parser.add_argument('--use-text', action='store_true', default=True)
     parser.add_argument('--no-text', dest='use_text', action='store_false')
     parser.add_argument('--overlap', type=float, default=0.5)
-    parser.add_argument('--tta', action='store_true', help='Enable test-time augmentation')
+    parser.add_argument('--tta', action='store_true', help='Enable 8-fold flip TTA')
+    parser.add_argument('--postprocess', action='store_true',
+                        help='Enable ET connected-component post-processing')
+    parser.add_argument('--et-min-size', type=int, default=50,
+                        help='Min voxel count for ET connected components (default: 50)')
     parser.add_argument('--save-preds', type=str, default=None, help='Directory to save predictions')
     return parser.parse_args()
 
@@ -136,6 +142,94 @@ def sliding_window_inference(
     return output
 
 
+def sliding_window_inference_tta(
+    model,
+    image: torch.Tensor,
+    text_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    patch_size: tuple,
+    overlap: float = 0.5,
+    use_text: bool = True,
+    use_amp: bool = True,
+    sw_batch_size: int = 2,
+) -> torch.Tensor:
+    """8-fold TTA: flip along each spatial axis combination, average softmax probs.
+
+    Flip combos: 2^3 = 8 (no flip, flip D, flip H, flip W, flip DH, ..., flip DHW).
+    Each flip is applied to the input image, inference is run, then the output
+    is flipped back before accumulation.
+
+    Returns:
+        [1, num_classes, D, H, W] averaged softmax probabilities.
+    """
+    # spatial dims for [B, C, D, H, W] are 2, 3, 4
+    spatial_dims = (2, 3, 4)
+    flip_combos = list(product([False, True], repeat=3))  # 8 combos
+
+    prob_sum = None
+
+    for flip_d, flip_h, flip_w in flip_combos:
+        # Build list of dims to flip
+        dims_to_flip = []
+        if flip_d:
+            dims_to_flip.append(spatial_dims[0])
+        if flip_h:
+            dims_to_flip.append(spatial_dims[1])
+        if flip_w:
+            dims_to_flip.append(spatial_dims[2])
+
+        # Flip input
+        img_aug = image
+        for d in dims_to_flip:
+            img_aug = torch.flip(img_aug, [d])
+
+        # Infer
+        probs = sliding_window_inference(
+            model, img_aug, text_ids, attention_mask,
+            patch_size=patch_size, overlap=overlap,
+            use_text=use_text, use_amp=use_amp,
+            sw_batch_size=sw_batch_size,
+        )
+
+        # Flip output back
+        for d in dims_to_flip:
+            probs = torch.flip(probs, [d])
+
+        if prob_sum is None:
+            prob_sum = probs
+        else:
+            prob_sum = prob_sum + probs
+
+    return prob_sum / len(flip_combos)
+
+
+def postprocess_et(pred_argmax: np.ndarray, et_class: int = 3, min_size: int = 50) -> np.ndarray:
+    """Remove small ET connected components (false positives).
+
+    Args:
+        pred_argmax: [D, H, W] integer label map.
+        et_class: label value for enhancing tumor.
+        min_size: minimum voxel count to keep an ET component.
+
+    Returns:
+        Cleaned label map with small ET components reclassified as necrotic (class 1).
+    """
+    pred = pred_argmax.copy()
+    et_mask = (pred == et_class)
+    if et_mask.sum() == 0:
+        return pred
+
+    labeled, n_components = ndimage_label(et_mask)
+
+    for comp_id in range(1, n_components + 1):
+        comp_mask = (labeled == comp_id)
+        if comp_mask.sum() < min_size:
+            # Reclassify small ET as necrotic core (class 1) — stays in TC but not ET
+            pred[comp_mask] = 1
+
+    return pred
+
+
 def load_model(config, checkpoint_path, device):
     """Load model from checkpoint."""
     model_cfg = config['model']
@@ -207,8 +301,16 @@ def main():
     if args.save_preds:
         os.makedirs(args.save_preds, exist_ok=True)
 
+    use_tta = args.tta
+    use_postprocess = args.postprocess
+    et_min_size = args.et_min_size
+
     print(f"\nEvaluating {len(dataset)} cases ({args.split} split)")
     print(f"Sliding window: patch={patch_size}, overlap={overlap}, text={args.use_text}")
+    if use_tta:
+        print("TTA: 8-fold flip ensemble ENABLED")
+    if use_postprocess:
+        print(f"Post-processing: ET connected-component filter (min_size={et_min_size})")
     print()
 
     with torch.no_grad():
@@ -221,9 +323,10 @@ def main():
             text_ids = sample['text_ids'].unsqueeze(0).to(device)
             attn_mask = sample['attention_mask'].unsqueeze(0).to(device)
 
-            # Sliding window inference
+            # Sliding window inference (with or without TTA)
             use_amp = config['training'].get('use_amp', True) and device.type == 'cuda'
-            probs = sliding_window_inference(
+            infer_fn = sliding_window_inference_tta if use_tta else sliding_window_inference
+            probs = infer_fn(
                 model, image, text_ids, attn_mask,
                 patch_size=patch_size,
                 overlap=overlap,
@@ -234,12 +337,24 @@ def main():
 
             # Convert to prediction
             pred_argmax = probs.argmax(dim=1).cpu()  # [1, D, H, W]
+            pred_np = pred_argmax.squeeze().numpy()
+
+            # Post-processing: remove small ET components
+            if use_postprocess:
+                pred_np = postprocess_et(pred_np, et_class=3, min_size=et_min_size)
+                # Rebuild tensor for dice_score_brats_regions (needs softmax-like input)
+                # Use one-hot from cleaned argmax as "probabilities"
+                pred_onehot = torch.zeros(1, 4, *pred_np.shape)
+                for c in range(4):
+                    pred_onehot[0, c] = torch.from_numpy((pred_np == c).astype(np.float32))
+                probs_for_dice = pred_onehot
+            else:
+                probs_for_dice = probs.cpu()
 
             # Compute metrics
-            dice = dice_score_brats_regions(probs.cpu(), mask.unsqueeze(0))
+            dice = dice_score_brats_regions(probs_for_dice, mask.unsqueeze(0))
             all_dice.append(dice)
 
-            pred_np = pred_argmax.squeeze().numpy()
             target_np = mask.numpy()
             hd95 = hausdorff_distance_95_brats_regions(pred_np, target_np)
             all_hd95.append(hd95)
