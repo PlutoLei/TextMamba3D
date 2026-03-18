@@ -22,7 +22,7 @@ model:
   depths: [2, 2, 2, 2]
   dropout: 0.1
   text_embed_dim: 256
-  text_max_len: 256              # 模型端保持 256 (已足够)
+  text_max_len: 192              # v4.5: 128->192, 拼接文本约 ~150 tokens
   use_pretrained_text: true
   unfreeze_text_layers: 2
   text_model_path: null
@@ -53,8 +53,7 @@ training:
   use_amp: true
   no_text_ratio: 0.15
   gradient_clip_norm: 1.0
-  # NOTE: dataset tokenizer uses model.text_max_len (256), not this field
-  # 拼接后文本约 ~100 tokens, 256 足够
+  # NOTE: tokenizer 截断长度由 model.text_max_len (192) 控制
 
 eval:
   metrics: ["dice", "hd95"]
