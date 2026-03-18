@@ -5,6 +5,10 @@ from .mamba_block import (
 )
 from .encoder_3d import PatchEmbed3D, MambaEncoder3D
 from .text_encoder import TextMambaEncoder
-from .fusion import PixelTextCrossAttention, MultiScalePixelTextAttention, FiLMLayer, MultiScaleFiLM, MambaFusion
+from .fusion import (
+    PixelTextCrossAttention, MultiScalePixelTextAttention,
+    FiLMLayer, MultiScaleFiLM, MambaFusion,
+    RMSNorm, CrossScaleSkipAttention, TextScaleGate, MultiScaleTextGate,
+)
 from .decoder_3d import MambaDecoder3D
 from .textmamba3d import TextMamba3D
