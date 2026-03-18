@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from .decoder_3d import MambaDecoder3D
 from .encoder_3d import MambaEncoder3D
-from .fusion import MultiScalePixelTextAttention
+from .fusion import MultiScalePixelTextAttention, MultiScaleTextGate
 from .text_encoder import TextMambaEncoder
 
 
@@ -33,6 +33,10 @@ class TextMamba3D(nn.Module):
         use_checkpoint: bool = False,
         text_model_path: str | None = None,
         deep_supervision: bool = False,
+        # V4.6 new parameters
+        use_text_gate: bool = False,
+        use_cross_scale_skip: bool = False,
+        text_gate_init_bias: float = 2.0,
     ) -> None:
         super().__init__()
 
@@ -62,15 +66,24 @@ class TextMamba3D(nn.Module):
             model_path=text_model_path,
         )
 
-        # Multi-scale cross-attention: text guides skip connections at stages 1,2,3
-        # Stage 0 excluded (32K tokens too expensive for cross-attention)
+        # Multi-scale cross-attention: stages 1,2,3 (stage 0 excluded)
         stage_dims = [embed_dim * (2 ** i) for i in range(1, len(depths))]
         self.multi_scale_attn = MultiScalePixelTextAttention(
-            stage_dims=stage_dims,     # [96, 192, 384] for embed_dim=48
-            text_dim=text_embed_dim,   # 256
-            num_heads=4,               # head_dim varies per stage
+            stage_dims=stage_dims,
+            text_dim=text_embed_dim,
+            num_heads=4,
         )
 
+        # V4.6 Direction B: Text Scale Gate
+        if use_text_gate:
+            self.text_gate = MultiScaleTextGate(
+                stage_dims=stage_dims,
+                init_bias=text_gate_init_bias,
+            )
+        else:
+            self.text_gate = None
+
+        # V4.6 Direction A: pass use_cross_scale_skip to decoder
         self.decoder = MambaDecoder3D(
             img_size=img_size,
             patch_size=patch_size,
@@ -81,6 +94,7 @@ class TextMamba3D(nn.Module):
             dropout=dropout,
             use_checkpoint=use_checkpoint,
             deep_supervision=deep_supervision,
+            use_cross_scale_skip=use_cross_scale_skip,
         )
 
         self.img_proj = nn.Sequential(
@@ -101,33 +115,20 @@ class TextMamba3D(nn.Module):
         Optional[torch.Tensor],
         Optional[torch.Tensor],
     ]:
-        """
-        Forward pass for text-guided 3D segmentation.
-
-        Args:
-            img: Input image tensor of shape [B, C, D, H, W]
-            text_ids: Text token indices of shape [B, L], optional for inference
-            attention_mask: [B, L] mask for text padding (1=valid, 0=pad)
-            return_features: Whether to return features for contrastive loss
-            use_text: Whether to use text guidance (False for text-free inference)
-
-        Returns:
-            Segmentation output [B, out_channels, D, H, W], and optionally
-            (img_feat, text_feat, pixel_feat) for contrastive loss
-        """
+        """Forward pass for text-guided 3D segmentation."""
         img_features = self.img_encoder(img)
 
         has_text = use_text and text_ids is not None
         if has_text:
             text_features = self.text_encoder(text_ids, attention_mask)
-            # Multi-scale fusion: stages 1,2,3 get text cross-attention
-            # Stage 0 stays raw (32K tokens, too expensive for cross-attention)
             fused = self.multi_scale_attn(
                 img_features[1:], text_features, attention_mask
             )
+            # V4.6 Direction B: gate text contribution per scale
+            if self.text_gate is not None:
+                fused = self.text_gate(img_features[1:], fused)
             decoder_features = [img_features[0]] + fused
         else:
-            # Bypass fusion entirely for text-free path
             decoder_features = img_features
 
         seg_output = self.decoder(decoder_features)
@@ -136,13 +137,11 @@ class TextMamba3D(nn.Module):
             return seg_output
 
         if has_text:
-            # Contrastive: project fused bottleneck (last in decoder_features) for alignment
             pixel_feat = decoder_features[-1]
             img_global = self.img_proj(pixel_feat.mean(dim=1))
             text_global = self.text_encoder.get_global_feature(text_features)
             return seg_output, img_global, text_global, pixel_feat
         else:
-            # No contrastive on text-free batches: return None features
             return seg_output, None, None, None
 
     def forward_without_text(self, img: torch.Tensor) -> torch.Tensor:

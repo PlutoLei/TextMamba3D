@@ -181,3 +181,48 @@ def test_decoder_backward_compat():
 
     out = decoder(features)
     assert out.shape == (B, 4, 64, 64, 64)
+
+
+def test_textmamba3d_with_text_gate():
+    """TextMamba3D with use_text_gate=True should produce same output shape."""
+    from models.textmamba3d import TextMamba3D
+
+    model = TextMamba3D(
+        img_size=(32, 32, 32),
+        in_channels=4,
+        out_channels=4,
+        embed_dim=48,
+        depths=[1, 1, 1, 1],
+        text_embed_dim=64,
+        text_max_len=16,
+        text_depth=1,
+        use_pretrained_text=False,
+        use_text_gate=True,
+        use_cross_scale_skip=True,
+    )
+
+    img = torch.randn(1, 4, 32, 32, 32)
+    out = model(img, use_text=False)
+    assert out.shape == (1, 4, 32, 32, 32)
+
+
+def test_textmamba3d_v46_backward_compat():
+    """TextMamba3D without new features should have no text_gate."""
+    from models.textmamba3d import TextMamba3D
+
+    model = TextMamba3D(
+        img_size=(32, 32, 32),
+        in_channels=4,
+        out_channels=4,
+        embed_dim=48,
+        depths=[1, 1, 1, 1],
+        text_embed_dim=64,
+        text_max_len=16,
+        text_depth=1,
+        use_pretrained_text=False,
+        use_text_gate=False,
+        use_cross_scale_skip=False,
+    )
+
+    assert model.text_gate is None
+    assert not model.decoder.use_cross_scale_skip
