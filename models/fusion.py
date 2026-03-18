@@ -389,3 +389,100 @@ class MambaFusion(nn.Module):
         out = self.norm(out + img_feat)
 
         return out
+
+
+# ---------------------------------------------------------------------------
+# Cross-Scale Skip Attention (AttnRes-inspired, V4.6)
+# ---------------------------------------------------------------------------
+
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (AttnRes best practice for keys)."""
+
+    def __init__(self, dim: int, eps: float = 1e-8):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return (x / rms) * self.scale
+
+
+class CrossScaleSkipAttention(nn.Module):
+    """AttnRes-inspired cross-scale skip attention for U-Net decoders.
+
+    SUPPLEMENTS (not replaces) the original matched-level skip connection.
+    Uses a learned pseudo-query to attend over global-average-pooled representations
+    of ALL available encoder features, producing a cross-scale context vector
+    that is broadcast to all spatial positions.
+
+    The original skip provides spatially-detailed per-voxel information.
+    This module adds coarse multi-resolution context on top.
+
+    AttnRes best practices: zero-init pseudo-query, RMSNorm on keys, zero-init out_proj.
+    """
+
+    def __init__(self, target_dim: int, candidate_dims: list):
+        """
+        Args:
+            target_dim: Channel dim of decoder target (after upsample)
+            candidate_dims: Channel dims of each candidate encoder feature
+        """
+        super().__init__()
+        self.target_dim = target_dim
+        self.num_candidates = len(candidate_dims)
+
+        self.key_projs = nn.ModuleList([
+            nn.Linear(cd, target_dim) for cd in candidate_dims
+        ])
+        self.key_norms = nn.ModuleList([
+            RMSNorm(target_dim) for _ in candidate_dims
+        ])
+        self.val_projs = nn.ModuleList([
+            nn.Linear(cd, target_dim) for cd in candidate_dims
+        ])
+
+        # Pseudo-query: one learnable vector per module instance (zero-init)
+        self.pseudo_query = nn.Parameter(torch.zeros(1, 1, target_dim))
+
+        # Output projection (zero-init for identity start)
+        self.out_proj = nn.Linear(target_dim, target_dim)
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+        self.scale = target_dim ** -0.5
+
+    def forward(
+        self,
+        target: torch.Tensor,
+        candidates: list,
+    ) -> torch.Tensor:
+        """
+        Args:
+            target: [B, L_target, D_target] decoder features after upsample
+            candidates: list of [B, L_i, D_i] encoder features (variable lengths)
+        Returns:
+            [B, L_target, D_target] cross-scale skip contribution (additive)
+        """
+        B, L, _ = target.shape
+
+        keys = []
+        values = []
+        for i, cand in enumerate(candidates):
+            pooled = cand.mean(dim=1, keepdim=True)  # [B, 1, D_i]
+            k = self.key_norms[i](self.key_projs[i](pooled))  # [B, 1, D_target]
+            v = self.val_projs[i](pooled)                       # [B, 1, D_target]
+            keys.append(k)
+            values.append(v)
+
+        keys = torch.cat(keys, dim=1)      # [B, S, D_target]
+        values = torch.cat(values, dim=1)   # [B, S, D_target]
+
+        q = self.pseudo_query.expand(B, -1, -1)  # [B, 1, D_target]
+        attn = (q * self.scale) @ keys.transpose(-2, -1)  # [B, 1, S]
+        attn = attn.softmax(dim=-1)
+
+        agg = (attn @ values)  # [B, 1, D_target]
+        out = self.out_proj(agg.expand(-1, L, -1))  # [B, L, D_target]
+
+        return out
