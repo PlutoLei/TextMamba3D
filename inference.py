@@ -159,6 +159,9 @@ class TextMamba3DInference:
             text_embed_dim=self.config['model']['text_embed_dim'],
             text_max_len=text_max_len,
             use_pretrained_text=use_pretrained_text,
+            use_text_gate=self.config['model'].get('use_text_gate', False),
+            use_cross_scale_skip=self.config['model'].get('use_cross_scale_skip', False),
+            text_gate_init_bias=self.config['model'].get('text_gate_init_bias', 2.0),
         ).to(self.device)
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)

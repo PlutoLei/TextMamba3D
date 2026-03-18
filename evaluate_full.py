@@ -249,6 +249,9 @@ def load_model(config, checkpoint_path, device):
         text_model_path=model_cfg.get('text_model_path'),
         deep_supervision=training_cfg.get('deep_supervision', False),
         dropout=model_cfg.get('dropout', 0.0),
+        use_text_gate=model_cfg.get('use_text_gate', False),
+        use_cross_scale_skip=model_cfg.get('use_cross_scale_skip', False),
+        text_gate_init_bias=model_cfg.get('text_gate_init_bias', 2.0),
     ).to(device)
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)

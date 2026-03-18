@@ -364,6 +364,9 @@ def main():
         text_model_path=text_model_path,
         deep_supervision=deep_supervision,
         dropout=config['model'].get('dropout', 0.0),
+        use_text_gate=config['model'].get('use_text_gate', False),
+        use_cross_scale_skip=config['model'].get('use_cross_scale_skip', False),
+        text_gate_init_bias=config['model'].get('text_gate_init_bias', 2.0),
     ).to(device)
 
     # Count parameters
