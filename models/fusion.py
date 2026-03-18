@@ -540,6 +540,8 @@ class MultiScaleTextGate(nn.Module):
         raw_features: list[torch.Tensor],
         fused_features: list[torch.Tensor],
     ) -> list[torch.Tensor]:
+        assert len(raw_features) == len(self.gates) == len(fused_features), \
+            f"Expected {len(self.gates)} features, got raw={len(raw_features)}, fused={len(fused_features)}"
         return [
             gate(raw, fused)
             for gate, raw, fused in zip(self.gates, raw_features, fused_features)
