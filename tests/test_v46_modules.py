@@ -226,3 +226,105 @@ def test_textmamba3d_v46_backward_compat():
 
     assert model.text_gate is None
     assert not model.decoder.use_cross_scale_skip
+
+
+@pytest.mark.slow
+def test_v46_full_forward_pass():
+    """Full V4.6 model forward pass with text input."""
+    from models.textmamba3d import TextMamba3D
+
+    model = TextMamba3D(
+        img_size=(32, 32, 32),
+        in_channels=4,
+        out_channels=4,
+        embed_dim=48,
+        depths=[1, 1, 1, 1],
+        text_embed_dim=64,
+        text_max_len=32,
+        text_depth=1,
+        use_text_gate=True,
+        use_cross_scale_skip=True,
+        use_pretrained_text=False,
+    )
+    model.eval()
+
+    img = torch.randn(1, 4, 32, 32, 32)
+    text_ids = torch.randint(0, 1000, (1, 32))
+    mask = torch.ones(1, 32)
+
+    with torch.no_grad():
+        out_text = model(img, text_ids, mask, use_text=True)
+        assert out_text.shape == (1, 4, 32, 32, 32)
+
+        out_no_text = model(img, use_text=False)
+        assert out_no_text.shape == (1, 4, 32, 32, 32)
+
+    assert not torch.allclose(out_text, out_no_text, atol=1e-3), \
+        "Text and no-text outputs should differ"
+
+
+@pytest.mark.slow
+def test_v46_gradient_flow():
+    """Verify gradients flow through both new modules."""
+    from models.textmamba3d import TextMamba3D
+
+    model = TextMamba3D(
+        img_size=(32, 32, 32),
+        in_channels=4,
+        out_channels=4,
+        embed_dim=48,
+        depths=[1, 1, 1, 1],
+        text_embed_dim=64,
+        text_max_len=16,
+        text_depth=1,
+        use_text_gate=True,
+        use_cross_scale_skip=True,
+        use_pretrained_text=False,
+    )
+
+    img = torch.randn(1, 4, 32, 32, 32)
+    text_ids = torch.randint(0, 1000, (1, 16))
+    mask = torch.ones(1, 16)
+
+    out = model(img, text_ids, mask, use_text=True)
+    loss = out.sum()
+    loss.backward()
+
+    # TextScaleGate gradients
+    for i, gate in enumerate(model.text_gate.gates):
+        assert gate.gate_proj.weight.grad is not None, f"No gradient for text gate {i}"
+        assert gate.gate_proj.weight.grad.abs().sum() > 0, f"Zero gradient for text gate {i}"
+
+    # CrossScaleSkipAttention gradients
+    for i, attn in enumerate(model.decoder.cross_scale_attns):
+        assert attn.pseudo_query.grad is not None, f"No gradient for pseudo_query {i}"
+
+
+@pytest.mark.slow
+def test_v46_with_contrastive_features():
+    """V4.6 model should return features for contrastive loss."""
+    from models.textmamba3d import TextMamba3D
+
+    model = TextMamba3D(
+        img_size=(32, 32, 32),
+        in_channels=4,
+        out_channels=4,
+        embed_dim=48,
+        depths=[1, 1, 1, 1],
+        text_embed_dim=64,
+        text_max_len=16,
+        text_depth=1,
+        use_text_gate=True,
+        use_cross_scale_skip=True,
+        use_pretrained_text=False,
+    )
+
+    img = torch.randn(1, 4, 32, 32, 32)
+    text_ids = torch.randint(0, 1000, (1, 16))
+    mask = torch.ones(1, 16)
+
+    seg, img_g, text_g, pix = model(img, text_ids, mask, return_features=True)
+    assert seg.shape == (1, 4, 32, 32, 32)
+    assert img_g is not None
+    assert text_g is not None
+    assert pix is not None
