@@ -53,3 +53,22 @@ def test_cross_scale_skip_attention_single_candidate():
     module = CrossScaleSkipAttention(target_dim=48, candidate_dims=[48])
     out = module(target, candidates)
     assert out.shape == (B, 4096, 48)
+
+
+def test_cross_scale_skip_attention_gradients():
+    """Verify gradients flow correctly through the module."""
+    from models.fusion import CrossScaleSkipAttention
+
+    module = CrossScaleSkipAttention(target_dim=64, candidate_dims=[32, 64])
+    target = torch.randn(2, 16, 64)
+    candidates = [
+        torch.randn(2, 8, 32, requires_grad=True),
+        torch.randn(2, 16, 64, requires_grad=True),
+    ]
+    out = module(target, candidates)
+    loss = out.sum()
+    loss.backward()
+    assert candidates[0].grad is not None
+    assert candidates[1].grad is not None
+    assert not torch.isnan(module.out_proj.weight.grad).any()
+    assert module.pseudo_query.grad is not None

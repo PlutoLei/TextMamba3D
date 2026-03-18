@@ -395,10 +395,11 @@ class MambaFusion(nn.Module):
 # Cross-Scale Skip Attention (AttnRes-inspired, V4.6)
 # ---------------------------------------------------------------------------
 
+# Custom RMSNorm for compatibility with PyTorch < 2.4 (which lacks nn.RMSNorm)
 class RMSNorm(nn.Module):
     """Root Mean Square Layer Normalization (AttnRes best practice for keys)."""
 
-    def __init__(self, dim: int, eps: float = 1e-8):
+    def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
         self.scale = nn.Parameter(torch.ones(dim))
@@ -429,6 +430,8 @@ class CrossScaleSkipAttention(nn.Module):
             candidate_dims: Channel dims of each candidate encoder feature
         """
         super().__init__()
+        if len(candidate_dims) == 0:
+            raise ValueError("candidate_dims must be non-empty")
         self.target_dim = target_dim
         self.num_candidates = len(candidate_dims)
 
@@ -450,7 +453,7 @@ class CrossScaleSkipAttention(nn.Module):
         nn.init.zeros_(self.out_proj.weight)
         nn.init.zeros_(self.out_proj.bias)
 
-        self.scale = target_dim ** -0.5
+        self.register_buffer('scale', torch.tensor(target_dim ** -0.5))
 
     def forward(
         self,
@@ -464,6 +467,8 @@ class CrossScaleSkipAttention(nn.Module):
         Returns:
             [B, L_target, D_target] cross-scale skip contribution (additive)
         """
+        assert len(candidates) == self.num_candidates, \
+            f"Expected {self.num_candidates} candidates, got {len(candidates)}"
         B, L, _ = target.shape
 
         keys = []
@@ -483,6 +488,6 @@ class CrossScaleSkipAttention(nn.Module):
         attn = attn.softmax(dim=-1)
 
         agg = (attn @ values)  # [B, 1, D_target]
-        out = self.out_proj(agg.expand(-1, L, -1))  # [B, L, D_target]
+        out = self.out_proj(agg).expand(-1, L, -1).contiguous()  # [B, L, D_target]
 
         return out
