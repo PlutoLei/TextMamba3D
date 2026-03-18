@@ -72,3 +72,59 @@ def test_cross_scale_skip_attention_gradients():
     assert candidates[1].grad is not None
     assert not torch.isnan(module.out_proj.weight.grad).any()
     assert module.pseudo_query.grad is not None
+
+
+def test_text_scale_gate_output_shape():
+    """TextScaleGate should output same shape as input."""
+    from models.fusion import TextScaleGate
+
+    B, L, D = 2, 512, 96
+    raw = torch.randn(B, L, D)
+    fused = torch.randn(B, L, D)
+
+    gate = TextScaleGate(feat_dim=D)
+    out = gate(raw, fused)
+    assert out.shape == (B, L, D), f"Expected ({B},{L},{D}), got {out.shape}"
+
+
+def test_text_scale_gate_init_near_fused():
+    """At init, gate ≈ 0.88, so output ≈ 0.88*fused + 0.12*raw."""
+    from models.fusion import TextScaleGate
+
+    B, L, D = 2, 64, 192
+    raw = torch.zeros(B, L, D)
+    fused = torch.ones(B, L, D)
+
+    gate = TextScaleGate(feat_dim=D)
+    out = gate(raw, fused)
+    # sigmoid(2) ≈ 0.8808
+    assert 0.85 < out.mean().item() < 0.92, f"Expected ~0.88, got {out.mean():.4f}"
+
+
+def test_text_scale_gate_bypass_when_same():
+    """When raw == fused, output should equal both (gate*x + (1-gate)*x = x)."""
+    from models.fusion import TextScaleGate
+
+    B, L, D = 2, 64, 192
+    x = torch.randn(B, L, D)
+
+    gate = TextScaleGate(feat_dim=D)
+    out = gate(x, x)
+    assert torch.allclose(out, x, atol=1e-5), "When raw==fused, output should equal input"
+
+
+def test_multi_scale_text_gate():
+    """MultiScaleTextGate should apply gates at each scale independently."""
+    from models.fusion import MultiScaleTextGate
+
+    B = 2
+    stage_dims = [96, 192, 384]
+    raw_features = [torch.randn(B, 512, 96), torch.randn(B, 64, 192), torch.randn(B, 8, 384)]
+    fused_features = [torch.randn(B, 512, 96), torch.randn(B, 64, 192), torch.randn(B, 8, 384)]
+
+    gate = MultiScaleTextGate(stage_dims=stage_dims)
+    outputs = gate(raw_features, fused_features)
+
+    assert len(outputs) == 3
+    for out, raw in zip(outputs, raw_features):
+        assert out.shape == raw.shape

@@ -491,3 +491,56 @@ class CrossScaleSkipAttention(nn.Module):
         out = self.out_proj(agg).expand(-1, L, -1).contiguous()  # [B, L, D_target]
 
         return out
+
+
+# ---------------------------------------------------------------------------
+# Text Scale Gate (AttnRes-inspired adaptive text fusion, V4.6)
+# ---------------------------------------------------------------------------
+
+class TextScaleGate(nn.Module):
+    """Learned gate controlling text fusion contribution at each scale.
+
+    Adaptively mixes raw encoder features with text-fused features:
+        output = gate * fused + (1 - gate) * raw
+
+    Init: zero weights + bias=2.0 → sigmoid(2)≈0.88 → text fusion ON by default.
+    """
+
+    def __init__(self, feat_dim: int, init_bias: float = 2.0):
+        super().__init__()
+        self.gate_proj = nn.Linear(2 * feat_dim, 1)
+        nn.init.zeros_(self.gate_proj.weight)
+        nn.init.constant_(self.gate_proj.bias, init_bias)
+
+    def forward(self, raw: torch.Tensor, fused: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            raw: [B, L, D] raw encoder features (before text fusion)
+            fused: [B, L, D] text-fused features (after SeqCA)
+        Returns:
+            [B, L, D] gated combination
+        """
+        gate_input = torch.cat([raw, fused], dim=-1)  # [B, L, 2D]
+        gate = torch.sigmoid(self.gate_proj(gate_input))  # [B, L, 1]
+        return gate * fused + (1 - gate) * raw
+
+
+class MultiScaleTextGate(nn.Module):
+    """Apply TextScaleGate at multiple encoder scales."""
+
+    def __init__(self, stage_dims: list[int], init_bias: float = 2.0):
+        super().__init__()
+        self.gates = nn.ModuleList([
+            TextScaleGate(feat_dim=dim, init_bias=init_bias)
+            for dim in stage_dims
+        ])
+
+    def forward(
+        self,
+        raw_features: list[torch.Tensor],
+        fused_features: list[torch.Tensor],
+    ) -> list[torch.Tensor]:
+        return [
+            gate(raw, fused)
+            for gate, raw, fused in zip(self.gates, raw_features, fused_features)
+        ]
