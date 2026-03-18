@@ -128,3 +128,56 @@ def test_multi_scale_text_gate():
     assert len(outputs) == 3
     for out, raw in zip(outputs, raw_features):
         assert out.shape == raw.shape
+
+
+def test_decoder_with_cross_scale_skip():
+    """Decoder with cross-scale skip should produce same output shape."""
+    from models.decoder_3d import MambaDecoder3D
+
+    B = 1
+    # img_size=(64,64,64), patch_size=(4,4,4) => base_spatial=(16,16,16)
+    # stage0: dim=48, L=16^3=4096; stage1: dim=96, L=8^3=512;
+    # stage2: dim=192, L=4^3=64; stage3 (bottleneck): dim=384, L=2^3=8
+    decoder = MambaDecoder3D(
+        img_size=(64, 64, 64),
+        patch_size=(4, 4, 4),
+        out_channels=4,
+        embed_dim=48,
+        depths=[2, 2, 2, 2],
+        use_cross_scale_skip=True,
+    )
+
+    features = [
+        torch.randn(B, 4096, 48),
+        torch.randn(B, 512, 96),
+        torch.randn(B, 64, 192),
+        torch.randn(B, 8, 384),
+    ]
+
+    out = decoder(features)
+    assert out.shape == (B, 4, 64, 64, 64), f"Expected (1,4,64,64,64), got {out.shape}"
+
+
+def test_decoder_backward_compat():
+    """Decoder without cross-scale skip should work identically to v4.5."""
+    from models.decoder_3d import MambaDecoder3D
+
+    B = 1
+    decoder = MambaDecoder3D(
+        img_size=(64, 64, 64),
+        patch_size=(4, 4, 4),
+        out_channels=4,
+        embed_dim=48,
+        depths=[2, 2, 2, 2],
+        use_cross_scale_skip=False,
+    )
+
+    features = [
+        torch.randn(B, 4096, 48),
+        torch.randn(B, 512, 96),
+        torch.randn(B, 64, 192),
+        torch.randn(B, 8, 384),
+    ]
+
+    out = decoder(features)
+    assert out.shape == (B, 4, 64, 64, 64)
