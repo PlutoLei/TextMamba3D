@@ -37,23 +37,23 @@ def _create_ssm(
     use_mamba3: bool = False,
     headdim: int | None = None,
 ):
-    """Create a Mamba SSM (v1 or v3) or MLP fallback.
+    """Create a Mamba SSM (v1 or v2) or MLP fallback.
 
     Args:
         dim: Model dimension (d_model).
         d_state: SSM state expansion factor.
-        d_conv: Local convolution width (Mamba-1 only; ignored by Mamba3).
+        d_conv: Local convolution width (Mamba-1 only; ignored by Mamba2).
         expand: Block expansion factor.
         dropout: Dropout rate (unused by SSM; kept for API consistency).
-        use_mamba3: If True, use Mamba3 complex-valued SSM.
-        headdim: Head dimension for Mamba3. Auto-selected if None.
+        use_mamba3: If True, use Mamba2 multi-head SSD.
+        headdim: Head dimension for Mamba2. Auto-selected if None.
             Must divide d_inner (dim * expand). Raises ValueError if invalid.
     """
     if use_mamba3:
         if not MAMBA3_AVAILABLE:
             raise ImportError(
-                "use_mamba3=True but mamba_ssm.Mamba3 is not available. "
-                "Install from source: pip install git+https://github.com/state-spaces/mamba.git"
+                "use_mamba3=True but mamba_ssm.Mamba2 is not available. "
+                "Install: pip install mamba-ssm>=2.3.1"
             )
         d_inner = int(dim * expand)
         hd = headdim or _auto_headdim(d_inner)

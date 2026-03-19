@@ -1,7 +1,7 @@
 # configs/textbrats_a100_v5.yaml
-# A100 40GB — Mamba-3 SSM backbone (V5.0 experiment)
-# Key change: mamba_ssm.Mamba -> mamba_ssm.Mamba3 (complex-valued SSM)
-# Must train from scratch — Mamba3 weights incompatible with Mamba-1
+# A100 40GB — Mamba-2 multi-head SSD backbone (V5.0 experiment)
+# Key change: mamba_ssm.Mamba -> mamba_ssm.Mamba2 (multi-head structured state space duality)
+# Must train from scratch — Mamba2 weights incompatible with Mamba-1
 
 data:
   data_dir: "./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
