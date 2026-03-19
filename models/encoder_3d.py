@@ -140,6 +140,8 @@ class MambaEncoder3D(nn.Module):
         d_state: int = 16,
         dropout: float = 0.0,
         use_checkpoint: bool = False,
+        use_mamba3: bool = False,
+        headdim: int | None = None,
     ):
         super().__init__()
         self.num_stages = len(depths)
@@ -180,6 +182,8 @@ class MambaEncoder3D(nn.Module):
                 d_state=d_state,
                 dropout=dropout,
                 use_checkpoint=use_checkpoint,
+                use_mamba3=use_mamba3,
+                headdim=headdim,
             )
             self.stages.append(stage)
 

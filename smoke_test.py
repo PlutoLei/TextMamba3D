@@ -57,7 +57,7 @@ def smoke_test():
 
     optimizer.zero_grad()
     with autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == 'cuda'):
-        pred, img_feat, text_feat = model(
+        pred, img_feat, text_feat, _pixel_feat = model(
             img, text_ids, attention_mask=attn_mask,
             return_features=True, use_text=True,
         )
@@ -111,7 +111,7 @@ def smoke_test():
     print("\n--- Test 3: Second forward+backward step ---")
     optimizer.zero_grad()
     with autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == 'cuda'):
-        pred2, img_feat2, text_feat2 = model(
+        pred2, img_feat2, text_feat2, _pixel_feat2 = model(
             img, text_ids, attention_mask=attn_mask,
             return_features=True, use_text=True,
         )

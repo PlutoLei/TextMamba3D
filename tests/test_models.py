@@ -481,22 +481,24 @@ class TestTextMamba3D:
         """Feature extraction for contrastive loss."""
         img = torch.randn(1, 4, 16, 16, 16)
         text_ids = torch.randint(0, 30522, (1, 16))
-        out, img_feat, text_feat = small_model(
+        out, img_feat, text_feat, pixel_feat = small_model(
             img, text_ids, return_features=True,
         )
         assert out.shape == (1, 4, 16, 16, 16)
         assert img_feat.shape == (1, 64)   # text_embed_dim
         assert text_feat.shape == (1, 64)
+        assert pixel_feat is not None
 
     def test_return_features_no_text(self, small_model):
         """Feature extraction without text returns None (no contrastive on text-free)."""
         img = torch.randn(1, 4, 16, 16, 16)
-        out, img_feat, text_feat = small_model(
+        out, img_feat, text_feat, pixel_feat = small_model(
             img, text_ids=None, use_text=False, return_features=True,
         )
         assert out.shape == (1, 4, 16, 16, 16)
         assert img_feat is None
         assert text_feat is None
+        assert pixel_feat is None
 
     def test_gradient_checkpointing(self):
         """Model with gradient checkpointing should train normally."""

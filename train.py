@@ -369,12 +369,14 @@ def main():
     if deep_supervision:
         print('Deep supervision: ENABLED (aux heads at intermediate decoder stages)')
 
+    use_mamba3 = config['model'].get('use_mamba3', False)
     model = TextMamba3D(
         img_size=tuple(config['model']['img_size']),
         in_channels=config['model']['in_channels'],
         out_channels=config['model']['out_channels'],
         embed_dim=config['model']['embed_dim'],
         depths=config['model']['depths'],
+        d_state=config['model'].get('d_state', 16),
         text_embed_dim=config['model']['text_embed_dim'],
         text_max_len=max_text_len,
         use_pretrained_text=use_pretrained_text,
@@ -386,7 +388,16 @@ def main():
         use_text_gate=config['model'].get('use_text_gate', False),
         use_cross_scale_skip=config['model'].get('use_cross_scale_skip', False),
         text_gate_init_bias=config['model'].get('text_gate_init_bias', 2.0),
+        use_mamba3=use_mamba3,
+        headdim=config['model'].get('headdim', None),
+        fusion_type=config['model'].get('fusion_type', 'seqca'),
     ).to(device)
+
+    if use_mamba3:
+        print(f'SSM Backend: Mamba-3 (d_state={config["model"].get("d_state", 16)}, '
+              f'headdim={config["model"].get("headdim", "auto")})')
+    else:
+        print('SSM Backend: Mamba-1 (default)')
 
     # Count parameters
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

@@ -1,0 +1,71 @@
+# configs/textbrats_a100_v5.yaml
+# A100 40GB — Mamba-3 SSM backbone (V5.0 experiment)
+# Key change: mamba_ssm.Mamba -> mamba_ssm.Mamba3 (complex-valued SSM)
+# Must train from scratch — Mamba3 weights incompatible with Mamba-1
+
+data:
+  data_dir: "./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
+  dataset_type: "textbrats"
+  patch_size: [128, 128, 128]
+  batch_size: 2                  # Mamba3 uses more memory than Mamba1
+  num_workers: 4
+  train_ratio: 0.596
+  val_ratio: 0.149
+  et_enriched: true
+  enriched_prob: 0.5
+
+model:
+  img_size: [128, 128, 128]
+  in_channels: 4
+  out_channels: 4
+  embed_dim: 48
+  depths: [2, 2, 2, 2]
+  d_state: 16                   # Keep same as V4.5 to isolate Mamba-3 effect
+  dropout: 0.1
+  text_embed_dim: 256
+  text_max_len: 192              # Match V4.5 to isolate Mamba-3 effect
+  use_pretrained_text: true
+  unfreeze_text_layers: 2
+  text_model_path: null
+  # V5.0 Mamba-3 settings
+  use_mamba3: true
+  headdim: 48                    # 48 divides all stage dims [48, 96, 192, 384]
+  # Fusion: use SeqCA (same as V4.5 best) to isolate SSM comparison
+  fusion_type: seqca
+
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  edge_weight: 1.0
+  contrastive_weight: 0.05
+  temperature: 0.07
+  class_weights: [0.25, 3.0, 1.0, 4.0]
+
+augmentation:
+  use_elastic: true
+  use_modality_dropout: true
+
+training:
+  epochs: 200
+  lr: 0.0001
+  weight_decay: 0.01
+  warmup_epochs: 10
+  contrastive_warmup_epochs: 30
+  patience: 40
+  gradient_accumulation: 2       # batch=2 * accum=2 = effective batch 4
+  gradient_checkpointing: true
+  deep_supervision: true
+  ds_weights: [0.2, 0.1, 0.05]
+  use_amp: true
+  no_text_ratio: 0.15
+  gradient_clip_norm: 1.0
+
+eval:
+  metrics: ["dice", "hd95"]
+  sliding_window: true
+  sw_overlap: 0.5
+  sw_batch_size: 2
+
+experiment:
+  name: "TextMamba3D_A100_v5.0_mamba3"
+  description: "V5.0: Mamba3 complex-valued SSM backbone, d_state=16, headdim=48, SeqCA fusion"

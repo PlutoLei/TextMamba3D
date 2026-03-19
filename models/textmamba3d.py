@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from .decoder_3d import MambaDecoder3D
 from .encoder_3d import MambaEncoder3D
-from .fusion import MultiScalePixelTextAttention, MultiScaleTextGate
+from .fusion import MultiScalePixelTextAttention, MultiScaleSeqCA, MultiScaleTextGate
 from .text_encoder import TextMambaEncoder
 
 
@@ -37,6 +37,11 @@ class TextMamba3D(nn.Module):
         use_text_gate: bool = False,
         use_cross_scale_skip: bool = False,
         text_gate_init_bias: float = 2.0,
+        # V5.0 Mamba-3 parameters
+        use_mamba3: bool = False,
+        headdim: int | None = None,
+        # Fusion module selection
+        fusion_type: str = "seqca",  # "seqca" | "pixeltext"
     ) -> None:
         super().__init__()
 
@@ -53,8 +58,14 @@ class TextMamba3D(nn.Module):
             d_state=d_state,
             dropout=dropout,
             use_checkpoint=use_checkpoint,
+            use_mamba3=use_mamba3,
+            headdim=headdim,
         )
 
+        # Note: use_mamba3/headdim are image-backbone-only parameters.
+        # TextMambaEncoder is a lightweight 2-layer MambaLayer adapter over
+        # frozen PubMedBERT — upgrading it to Mamba3 adds complexity without
+        # benefit, since the text path is not the performance bottleneck.
         self.text_encoder = TextMambaEncoder(
             embed_dim=text_embed_dim,
             max_len=text_max_len,
@@ -68,7 +79,8 @@ class TextMamba3D(nn.Module):
 
         # Multi-scale cross-attention: stages 1,2,3 (stage 0 excluded)
         stage_dims = [embed_dim * (2 ** i) for i in range(1, len(depths))]
-        self.multi_scale_attn = MultiScalePixelTextAttention(
+        fusion_cls = MultiScaleSeqCA if fusion_type == "seqca" else MultiScalePixelTextAttention
+        self.multi_scale_attn = fusion_cls(
             stage_dims=stage_dims,
             text_dim=text_embed_dim,
             num_heads=4,
@@ -95,6 +107,8 @@ class TextMamba3D(nn.Module):
             use_checkpoint=use_checkpoint,
             deep_supervision=deep_supervision,
             use_cross_scale_skip=use_cross_scale_skip,
+            use_mamba3=use_mamba3,
+            headdim=headdim,
         )
 
         self.img_proj = nn.Sequential(

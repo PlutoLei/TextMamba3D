@@ -241,6 +241,7 @@ def load_model(config, checkpoint_path, device):
         out_channels=model_cfg['out_channels'],
         embed_dim=model_cfg['embed_dim'],
         depths=model_cfg['depths'],
+        d_state=model_cfg.get('d_state', 16),
         text_embed_dim=model_cfg['text_embed_dim'],
         text_max_len=model_cfg.get('text_max_len', 256),
         use_pretrained_text=model_cfg.get('use_pretrained_text', True),
@@ -252,6 +253,9 @@ def load_model(config, checkpoint_path, device):
         use_text_gate=model_cfg.get('use_text_gate', False),
         use_cross_scale_skip=model_cfg.get('use_cross_scale_skip', False),
         text_gate_init_bias=model_cfg.get('text_gate_init_bias', 2.0),
+        use_mamba3=model_cfg.get('use_mamba3', False),
+        headdim=model_cfg.get('headdim', None),
+        fusion_type=model_cfg.get('fusion_type', 'seqca'),
     ).to(device)
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)

@@ -45,6 +45,8 @@ class MambaDecoder3D(nn.Module):
         use_checkpoint: bool = False,
         deep_supervision: bool = False,
         use_cross_scale_skip: bool = False,
+        use_mamba3: bool = False,
+        headdim: int | None = None,
     ):
         super().__init__()
         self.num_stages = len(depths)
@@ -75,6 +77,8 @@ class MambaDecoder3D(nn.Module):
                 d_state=d_state,
                 dropout=dropout,
                 use_checkpoint=use_checkpoint,
+                use_mamba3=use_mamba3,
+                headdim=headdim,
             )
             self.stages.append(stage)
 
