@@ -13,7 +13,7 @@ except ImportError:
     MAMBA_AVAILABLE = False
 
 try:
-    from mamba_ssm import Mamba3
+    from mamba_ssm import Mamba2 as Mamba3  # V5.0: use Mamba2 (stable multi-head SSM)
     MAMBA3_AVAILABLE = True
 except ImportError:
     Mamba3 = None
