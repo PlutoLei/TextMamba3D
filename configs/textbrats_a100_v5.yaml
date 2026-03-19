@@ -53,7 +53,7 @@ training:
   contrastive_warmup_epochs: 30
   patience: 40
   gradient_accumulation: 2       # batch=2 * accum=2 = effective batch 4
-  gradient_checkpointing: true
+  gradient_checkpointing: false   # Mamba3 incompatible with torch checkpoint (unpacked tensor error)
   deep_supervision: true
   ds_weights: [0.2, 0.1, 0.05]
   use_amp: true
