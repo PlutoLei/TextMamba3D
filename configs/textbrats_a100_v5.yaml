@@ -27,8 +27,8 @@ model:
   use_pretrained_text: true
   unfreeze_text_layers: 2
   text_model_path: null
-  # V5.0 Mamba-3 settings
-  use_mamba3: true
+  # V5.0 Mamba-3 settings (fallback to Mamba1 if Mamba3 unavailable)
+  use_mamba3: false              # CUDA 13.0 incompatible with Mamba3, using Mamba1
   headdim: 48                    # 48 divides all stage dims [48, 96, 192, 384]
   # Fusion: use SeqCA (same as V4.5 best) to isolate SSM comparison
   fusion_type: seqca
