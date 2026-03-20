@@ -44,6 +44,6 @@ class EdgeLoss(nn.Module):
         """
         edge_mask = self.get_edge_mask(target)  # [B, 1, D, H, W]
         edge_weight_map = edge_mask.squeeze(1)  # [B, D, H, W]
-        loss = F.cross_entropy(pred, target, reduction='none')  # [B, D, H, W]
+        loss = F.cross_entropy(pred.float(), target, reduction='none')  # [B, D, H, W]
         edge_bonus = (loss * edge_weight_map).mean()
         return edge_bonus
