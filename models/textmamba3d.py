@@ -172,10 +172,38 @@ class TextMamba3D(nn.Module):
             return seg_output, None, None, None
 
     def to_bf16_with_fp32_text(self) -> "TextMamba3D":
-        """Cast model to bf16 while keeping BERT backbone in fp32."""
+        """Cast model to bf16 while keeping BERT backbone in fp32.
+
+        DEPRECATED: Use prepare_for_amp() instead for bf16 autocast training.
+        """
         self.to(dtype=torch.bfloat16)
         if hasattr(self.text_encoder, 'bert') and self.text_encoder.bert is not None:
             self.text_encoder.bert = self.text_encoder.bert.to(dtype=torch.float32)
+        return self
+
+    def prepare_for_amp(self) -> "TextMamba3D":
+        """Prepare model for bf16 autocast training with Mamba3.
+
+        Only SSM modules (Mamba2/Mamba3) are cast to bf16 permanently.
+        Everything else stays fp32 — autocast handles casting during forward.
+        This avoids Triton backward kernel crashes under autocast.
+        """
+        try:
+            from mamba_ssm import Mamba2
+        except ImportError:
+            Mamba2 = None
+        try:
+            from mamba_ssm import Mamba3
+        except (ImportError, AttributeError):
+            Mamba3 = None
+
+        ssm_types = tuple(t for t in [Mamba2, Mamba3] if t is not None)
+        if not ssm_types:
+            return self
+
+        for module in self.modules():
+            if isinstance(module, ssm_types):
+                module.to(dtype=torch.bfloat16)
         return self
 
     def forward_without_text(self, img: torch.Tensor) -> torch.Tensor:

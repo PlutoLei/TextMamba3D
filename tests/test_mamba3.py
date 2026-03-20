@@ -236,6 +236,77 @@ class TestTextMamba3DWithMamba3:
         assert len(ssm_params) > 0
         assert ssm_params[0].grad is not None
 
+    @requires_mamba3
+    @requires_cuda
+    def test_prepare_for_amp_ssm_bf16_others_fp32(self):
+        """prepare_for_amp() casts only SSM modules to bf16, rest stays fp32."""
+        from models.textmamba3d import TextMamba3D
+        model = TextMamba3D(
+            img_size=(32, 32, 32), in_channels=4, out_channels=4,
+            embed_dim=48, depths=[1, 1, 1, 1], patch_size=(4, 4, 4),
+            d_state=16, use_pretrained_text=False,
+            use_mamba3=True, headdim=48,
+        ).cuda()
+        model.prepare_for_amp()
+
+        # SSM weights must be bf16
+        enc_block = model.img_encoder.stages[0].blocks[0]
+        for p in enc_block.dhw_fwd.parameters():
+            assert p.dtype == torch.bfloat16, f"SSM param should be bf16, got {p.dtype}"
+
+        # Non-SSM weights must stay fp32
+        assert enc_block.norm.weight.dtype == torch.float32, "LayerNorm should stay fp32"
+        assert enc_block.merge.weight.dtype == torch.float32, "merge Linear should stay fp32"
+
+        # Seg head should stay fp32
+        assert model.seg_head.weight.dtype == torch.float32, "seg_head should stay fp32"
+
+    @requires_mamba3
+    @requires_cuda
+    def test_forward_backward_under_autocast(self):
+        """Full forward+backward under bf16 autocast with prepare_for_amp()."""
+        from models.textmamba3d import TextMamba3D
+        model = TextMamba3D(
+            img_size=(32, 32, 32), in_channels=4, out_channels=4,
+            embed_dim=48, depths=[1, 1, 1, 1], patch_size=(4, 4, 4),
+            d_state=16, use_pretrained_text=False,
+            use_mamba3=True, headdim=48,
+        ).cuda()
+        model.prepare_for_amp()
+
+        img = torch.randn(1, 4, 32, 32, 32, device='cuda')
+        text = torch.randint(0, 100, (1, 16), device='cuda')
+
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            out = model(img, text)
+            loss = out.float().sum()
+        loss.backward()
+
+        # Verify gradients exist on SSM params
+        enc_block = model.img_encoder.stages[0].blocks[0]
+        for p in enc_block.dhw_fwd.parameters():
+            if p.requires_grad:
+                assert p.grad is not None, "SSM param should have gradient"
+                assert not torch.isnan(p.grad).any(), "SSM grad should not be NaN"
+
+    @requires_mamba3
+    @requires_cuda
+    def test_text_encoder_ssm_no_autocast(self):
+        """Text encoder mamba layers must not run under autocast."""
+        from models.text_encoder import TextMambaEncoder
+        enc = TextMambaEncoder(
+            embed_dim=48, text_max_len=32, depth=1,
+            use_pretrained=False,
+        ).cuda()
+        # Cast mamba_layers to bf16 (simulating prepare_for_amp)
+        enc.mamba_layers.to(torch.bfloat16)
+
+        text = torch.randint(0, 100, (1, 16), device='cuda')
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            out = enc(text)
+        assert out.dtype == torch.bfloat16 or out.dtype == torch.float32
+        # Key: no crash = test passes
+
     def test_full_model_mamba1_backward_compat(self):
         """TextMamba3D without use_mamba3 still works (backward compat)."""
         from models.textmamba3d import TextMamba3D

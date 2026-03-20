@@ -413,6 +413,9 @@ def main():
     if bf16_mode == 'pure':
         model.to_bf16_with_fp32_text()
         print('Pure bf16 mode: model bf16, BERT fp32')
+    elif use_amp and use_mamba3:
+        model.prepare_for_amp()
+        print('AMP + Mamba3: SSM modules bf16, rest fp32 (autocast handles casting)')
 
     if use_mamba3:
         print(f'SSM Backend: Mamba-3 (d_state={config["model"].get("d_state", 16)}, '
