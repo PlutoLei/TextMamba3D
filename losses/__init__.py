@@ -74,8 +74,9 @@ class CombinedLoss(nn.Module):
         losses['dice'] = (
             self.dice_loss(pred, target) if self.dice_weight else self._zero(pred)
         )
+        ce_w = self.ce_class_weights.to(pred.dtype) if self.ce_class_weights is not None else None
         losses['ce'] = (
-            F.cross_entropy(pred, target, weight=self.ce_class_weights)
+            F.cross_entropy(pred, target, weight=ce_w)
             if self.ce_weight else self._zero(pred)
         )
         losses['edge'] = (
@@ -115,7 +116,7 @@ class CombinedLoss(nn.Module):
             for w, aux in zip(self.DS_WEIGHTS, aux_preds):
                 aux_up = F.interpolate(aux, size=target_size, mode='trilinear', align_corners=False)
                 aux_dice = self.dice_loss(aux_up, target)
-                aux_ce = F.cross_entropy(aux_up, target, weight=self.ce_class_weights)
+                aux_ce = F.cross_entropy(aux_up, target, weight=ce_w)
                 ds_loss = ds_loss + w * (aux_dice + aux_ce)
             losses['deep_supervision'] = ds_loss
             total_with_ds = losses['total'] + ds_loss
