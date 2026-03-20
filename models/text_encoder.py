@@ -123,13 +123,11 @@ class TextMambaEncoder(nn.Module):
             )
             hidden = bert_out.last_hidden_state  # [B, L, 768]
 
-        # Project to embed_dim (autocast handles fp32→bf16 casting)
+        # Project to embed_dim
         x = self.proj(hidden)  # [B, L, embed_dim]
 
-        # Task-specific Mamba adaptation — disable autocast for SSM Triton kernels
-        with torch.autocast(device_type='cuda', enabled=False):
-            x = x.to(torch.bfloat16)
-            x = self.mamba_layers(x)
+        # Task-specific Mamba adaptation
+        x = self.mamba_layers(x)
         x = self.norm(x)
         return x
 

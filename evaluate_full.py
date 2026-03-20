@@ -275,9 +275,6 @@ def load_model(config, checkpoint_path, device, bf16_mode=None):
     if bf16_mode == 'pure':
         model.to_bf16_with_fp32_text()
         print('Pure bf16 mode: model bf16, BERT fp32')
-    elif config['training'].get('use_amp') and config['model'].get('use_mamba3'):
-        model.prepare_for_amp()
-        print('AMP + Mamba3: SSM modules bf16, rest fp32')
 
     model.eval()
 
