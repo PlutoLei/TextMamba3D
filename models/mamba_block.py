@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from einops import rearrange
-import torch.nn.functional as F
 
 try:
     from mamba_ssm import Mamba
@@ -13,11 +12,22 @@ except ImportError:
     MAMBA_AVAILABLE = False
 
 try:
-    from mamba_ssm import Mamba2 as Mamba3  # V5.0: use Mamba2 (stable multi-head SSM)
+    from mamba_ssm import Mamba3  # V5.1: real Mamba-3 (ICLR 2026, arxiv 2603.15569)
     MAMBA3_AVAILABLE = True
-except ImportError:
-    Mamba3 = None
-    MAMBA3_AVAILABLE = False
+except (ImportError, AttributeError):
+    # Fallback: Mamba2 as stand-in (V5.0 behavior)
+    try:
+        from mamba_ssm import Mamba2 as Mamba3
+        MAMBA3_AVAILABLE = True
+        import warnings
+        warnings.warn(
+            "Real Mamba3 not available, falling back to Mamba2. "
+            "Install from main: pip install git+https://github.com/state-spaces/mamba.git@main",
+            stacklevel=2,
+        )
+    except ImportError:
+        Mamba3 = None
+        MAMBA3_AVAILABLE = False
 
 
 def _auto_headdim(d_inner: int) -> int:
