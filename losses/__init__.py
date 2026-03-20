@@ -115,7 +115,7 @@ class CombinedLoss(nn.Module):
             ds_loss = self._zero(pred)
             target_size = target.shape[1:]  # (D, H, W)
             for w, aux in zip(self.DS_WEIGHTS, aux_preds):
-                aux_up = F.interpolate(aux, size=target_size, mode='trilinear', align_corners=False).float()
+                aux_up = F.interpolate(aux.float(), size=target_size, mode='trilinear', align_corners=False)
                 aux_dice = self.dice_loss(aux_up, target)
                 aux_ce = F.cross_entropy(aux_up, target, weight=ce_w)
                 ds_loss = ds_loss + w * (aux_dice + aux_ce)

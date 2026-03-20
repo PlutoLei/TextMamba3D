@@ -1,7 +1,7 @@
 # configs/textbrats_a100_v5.1.yaml
 # A100 40GB — Real Mamba-3 (ICLR 2026, arxiv 2603.15569)
 # Unified V5.1 config — notebook patches d_state/chunk_size for V5.1a (control) vs V5.1b (full)
-# NOTE: uses bf16 autocast (use_amp=true). Pure bf16 mode was abandoned — lacks backward kernels for some ops.
+# NOTE: uses pure bf16 (model.to(bf16), BERT stays fp32). Mamba-3 paper Appendix D: "trained with bfloat16".
 # Must train from scratch — Mamba-3 weights incompatible with Mamba-1/Mamba-2
 
 data:
@@ -59,8 +59,8 @@ training:
   gradient_checkpointing: false   # Mamba-3 incompatible with torch checkpoint
   deep_supervision: true
   ds_weights: [0.2, 0.1, 0.05]
-  use_amp: true                  # bf16 autocast (NOT fp16 — compatible with Mamba-3 Triton kernels)
-  # bf16_mode: "pure" was removed — pure bf16 casting lacks backward kernels for some ops
+  use_amp: false                 # Mamba-3 paper trains with explicit bf16 (Appendix D), not autocast
+  bf16_mode: "pure"              # Model bf16, BERT fp32. Loss computed in fp32.
   no_text_ratio: 0.15
   gradient_clip_norm: 1.0
 
