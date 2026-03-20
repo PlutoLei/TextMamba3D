@@ -123,6 +123,9 @@ class TextMambaEncoder(nn.Module):
             )
             hidden = bert_out.last_hidden_state  # [B, L, 768]
 
+        # Cast BERT fp32 output to match proj dtype (pure bf16 mode: BERT fp32, proj bf16)
+        hidden = hidden.to(self.proj[0].weight.dtype)
+
         # Project to embed_dim
         x = self.proj(hidden)  # [B, L, embed_dim]
 
