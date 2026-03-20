@@ -59,8 +59,8 @@ training:
   gradient_checkpointing: false   # Mamba-3 incompatible with torch checkpoint
   deep_supervision: true
   ds_weights: [0.2, 0.1, 0.05]
-  use_amp: false                 # CHANGED: disable autocast (Mamba-3 Triton kernel bug)
-  bf16_mode: "pure"              # NEW: explicit bf16 casting (model + inputs)
+  use_amp: true                  # bf16 autocast (NOT fp16 — compatible with Mamba-3 Triton kernels)
+  # bf16_mode: "pure" was removed — pure bf16 casting lacks backward kernels for some ops
   no_text_ratio: 0.15
   gradient_clip_norm: 1.0
 
