@@ -1,7 +1,7 @@
 # configs/textbrats_a100_v5.1.yaml
 # A100 40GB — Real Mamba-3 (ICLR 2026, arxiv 2603.15569)
 # Unified V5.1 config — notebook patches d_state/chunk_size for V5.1a (control) vs V5.1b (full)
-# CRITICAL: use_amp=false, bf16_mode=pure (Mamba-3 Triton backward kernel has fp16/bf16 dtype mismatch under autocast)
+# NOTE: uses bf16 autocast (use_amp=true). Pure bf16 mode was abandoned — lacks backward kernels for some ops.
 # Must train from scratch — Mamba-3 weights incompatible with Mamba-1/Mamba-2
 
 data:
@@ -72,4 +72,4 @@ eval:
 
 experiment:
   name: "TextMamba3D_A100_v5.1_real_mamba3"
-  description: "V5.1: Real Mamba-3 SISO, pure bf16, SeqCA fusion. V5.1a=d_state16, V5.1b=d_state64"
+  description: "V5.1: Real Mamba-3 SISO, bf16 autocast, SeqCA fusion. V5.1a=d_state16, V5.1b=d_state64"
