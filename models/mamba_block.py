@@ -371,16 +371,21 @@ class CrossScanBiMamba3DBlock(nn.Module):
         x_3d = rearrange(x, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
         x = x + rearrange(self.dwconv(x_3d), 'b c d h w -> b (d h w) c')
 
-        # Scan 1: D-H-W ordering (native)
-        out_dhw_f = self.dhw_fwd(x)
+        # SSM scans: disable autocast to prevent Mamba3 Triton backward crash
+        # (autocast changes tensor dtypes mid-computation, causing illegal memory access)
+        with torch.autocast(device_type='cuda', enabled=False):
+            x_ssm = x.to(torch.bfloat16)
 
-        # Scan 2: H-W-D ordering
-        x_hwd = self._reorder(x, 'd h w', 'h w d')
-        out_hwd_f = self._reorder(self.hwd_fwd(x_hwd), 'h w d', 'd h w')
+            # Scan 1: D-H-W ordering (native)
+            out_dhw_f = self.dhw_fwd(x_ssm)
 
-        # Scan 3: W-D-H ordering
-        x_wdh = self._reorder(x, 'd h w', 'w d h')
-        out_wdh_f = self._reorder(self.wdh_fwd(x_wdh), 'w d h', 'd h w')
+            # Scan 2: H-W-D ordering
+            x_hwd = self._reorder(x_ssm, 'd h w', 'h w d')
+            out_hwd_f = self._reorder(self.hwd_fwd(x_hwd), 'h w d', 'd h w')
+
+            # Scan 3: W-D-H ordering
+            x_wdh = self._reorder(x_ssm, 'd h w', 'w d h')
+            out_wdh_f = self._reorder(self.wdh_fwd(x_wdh), 'w d h', 'd h w')
 
         # Merge all 3 directions
         merged = torch.cat([out_dhw_f, out_hwd_f, out_wdh_f], dim=-1)
