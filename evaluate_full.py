@@ -10,7 +10,6 @@ import torch
 import torch.nn.functional as F
 import yaml
 from scipy.ndimage import label as ndimage_label
-from torch.amp import autocast
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
@@ -38,6 +37,9 @@ def parse_args():
     return parser.parse_args()
 
 
+from utils.precision import get_amp_context
+
+
 def sliding_window_inference(
     model,
     image: torch.Tensor,
@@ -48,6 +50,7 @@ def sliding_window_inference(
     use_text: bool = True,
     use_amp: bool = True,
     sw_batch_size: int = 2,
+    bf16_mode=None,
 ) -> torch.Tensor:
     """Sliding window inference on a full-volume image.
 
@@ -68,6 +71,9 @@ def sliding_window_inference(
     device = image.device
     B, C, D, H, W = image.shape
     pD, pH, pW = patch_size
+
+    if bf16_mode == 'pure':
+        image = image.to(dtype=torch.bfloat16)
 
     # Compute step sizes
     step_d = max(1, int(pD * (1 - overlap)))
@@ -123,7 +129,7 @@ def sliding_window_inference(
             batch_text = None
             batch_mask = None
 
-        with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+        with get_amp_context(bf16_mode, use_amp):
             logits = model(patch_batch, batch_text, attention_mask=batch_mask, use_text=use_text)
             probs = F.softmax(logits, dim=1).float()
 
@@ -152,6 +158,7 @@ def sliding_window_inference_tta(
     use_text: bool = True,
     use_amp: bool = True,
     sw_batch_size: int = 2,
+    bf16_mode=None,
 ) -> torch.Tensor:
     """8-fold TTA: flip along each spatial axis combination, average softmax probs.
 
@@ -189,6 +196,7 @@ def sliding_window_inference_tta(
             patch_size=patch_size, overlap=overlap,
             use_text=use_text, use_amp=use_amp,
             sw_batch_size=sw_batch_size,
+            bf16_mode=bf16_mode,
         )
 
         # Flip output back
@@ -230,7 +238,7 @@ def postprocess_et(pred_argmax: np.ndarray, et_class: int = 3, min_size: int = 5
     return pred
 
 
-def load_model(config, checkpoint_path, device):
+def load_model(config, checkpoint_path, device, bf16_mode=None):
     """Load model from checkpoint."""
     model_cfg = config['model']
     training_cfg = config['training']
@@ -255,11 +263,19 @@ def load_model(config, checkpoint_path, device):
         text_gate_init_bias=model_cfg.get('text_gate_init_bias', 2.0),
         use_mamba3=model_cfg.get('use_mamba3', False),
         headdim=model_cfg.get('headdim', None),
+        rope_fraction=model_cfg.get('rope_fraction', None),
+        chunk_size=model_cfg.get('chunk_size', None),
+        is_mimo=model_cfg.get('is_mimo', False),
         fusion_type=model_cfg.get('fusion_type', 'seqca'),
     ).to(device)
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt['model'])
+
+    if bf16_mode == 'pure':
+        model.to_bf16_with_fp32_text()
+        print('Pure bf16 mode: model bf16, BERT fp32')
+
     model.eval()
 
     epoch = ckpt.get('epoch', '?')
@@ -276,7 +292,8 @@ def main():
         config = yaml.safe_load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = load_model(config, args.checkpoint, device)
+    bf16_mode = config['training'].get('bf16_mode', None)
+    model = load_model(config, args.checkpoint, device, bf16_mode=bf16_mode)
 
     # Tokenizer
     model_cfg = config['model']
@@ -320,6 +337,11 @@ def main():
         print(f"Post-processing: ET connected-component filter (min_size={et_min_size})")
     print()
 
+    use_amp = config['training'].get('use_amp', True) and device.type == 'cuda'
+    if bf16_mode == 'pure':
+        use_amp = False
+    infer_fn = sliding_window_inference_tta if use_tta else sliding_window_inference
+
     with torch.no_grad():
         for idx in tqdm(range(len(dataset)), desc='Evaluating'):
             sample = dataset[idx]
@@ -329,10 +351,6 @@ def main():
 
             text_ids = sample['text_ids'].unsqueeze(0).to(device)
             attn_mask = sample['attention_mask'].unsqueeze(0).to(device)
-
-            # Sliding window inference (with or without TTA)
-            use_amp = config['training'].get('use_amp', True) and device.type == 'cuda'
-            infer_fn = sliding_window_inference_tta if use_tta else sliding_window_inference
             probs = infer_fn(
                 model, image, text_ids, attn_mask,
                 patch_size=patch_size,
@@ -340,6 +358,7 @@ def main():
                 use_text=args.use_text,
                 use_amp=use_amp,
                 sw_batch_size=sw_batch_size,
+                bf16_mode=bf16_mode,
             )
 
             # Convert to prediction

@@ -1,0 +1,75 @@
+# configs/textbrats_a100_v5.1.yaml
+# A100 40GB — Real Mamba-3 (ICLR 2026, arxiv 2603.15569)
+# Unified V5.1 config — notebook patches d_state/chunk_size for V5.1a (control) vs V5.1b (full)
+# CRITICAL: use_amp=false, bf16_mode=pure (Mamba-3 Triton backward kernel has fp16/bf16 dtype mismatch under autocast)
+# Must train from scratch — Mamba-3 weights incompatible with Mamba-1/Mamba-2
+
+data:
+  data_dir: "./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
+  dataset_type: "textbrats"
+  patch_size: [128, 128, 128]
+  batch_size: 2
+  num_workers: 4
+  train_ratio: 0.596
+  val_ratio: 0.149
+  et_enriched: true
+  enriched_prob: 0.5
+
+model:
+  img_size: [128, 128, 128]
+  in_channels: 4
+  out_channels: 4
+  embed_dim: 48
+  depths: [2, 2, 2, 2]
+  d_state: 64                   # V5.1b default; V5.1a patches to 16 at runtime
+  dropout: 0.1
+  text_embed_dim: 256
+  text_max_len: 192
+  use_pretrained_text: true
+  unfreeze_text_layers: 2
+  text_model_path: null
+  # V5.1 Real Mamba-3 settings
+  use_mamba3: true
+  headdim: null                  # Auto-select per stage (48 for Stage0, 64 for Stage1-3)
+  rope_fraction: 0.5            # Complex-valued RoPE (Mamba-3 core feature)
+  chunk_size: 128                # V5.1b default; V5.1a patches to 64 at runtime
+  is_mimo: false                 # SISO mode
+  fusion_type: seqca
+
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  edge_weight: 1.0
+  contrastive_weight: 0.05
+  temperature: 0.07
+  class_weights: [0.25, 3.0, 1.0, 4.0]
+
+augmentation:
+  use_elastic: true
+  use_modality_dropout: true
+
+training:
+  epochs: 200
+  lr: 0.0001
+  weight_decay: 0.01
+  warmup_epochs: 10
+  contrastive_warmup_epochs: 30
+  patience: 40
+  gradient_accumulation: 2       # batch=2 * accum=2 = effective batch 4
+  gradient_checkpointing: false   # Mamba-3 incompatible with torch checkpoint
+  deep_supervision: true
+  ds_weights: [0.2, 0.1, 0.05]
+  use_amp: false                 # CHANGED: disable autocast (Mamba-3 Triton kernel bug)
+  bf16_mode: "pure"              # NEW: explicit bf16 casting (model + inputs)
+  no_text_ratio: 0.15
+  gradient_clip_norm: 1.0
+
+eval:
+  metrics: ["dice", "hd95"]
+  sliding_window: true
+  sw_overlap: 0.5
+  sw_batch_size: 2
+
+experiment:
+  name: "TextMamba3D_A100_v5.1_real_mamba3"
+  description: "V5.1: Real Mamba-3 SISO, pure bf16, SeqCA fusion. V5.1a=d_state16, V5.1b=d_state64"

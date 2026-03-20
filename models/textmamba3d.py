@@ -40,6 +40,9 @@ class TextMamba3D(nn.Module):
         # V5.0 Mamba-3 parameters
         use_mamba3: bool = False,
         headdim: int | None = None,
+        rope_fraction: float | None = None,
+        chunk_size: int | None = None,
+        is_mimo: bool = False,
         # Fusion module selection
         fusion_type: str = "seqca",  # "seqca" | "pixeltext"
     ) -> None:
@@ -60,9 +63,12 @@ class TextMamba3D(nn.Module):
             use_checkpoint=use_checkpoint,
             use_mamba3=use_mamba3,
             headdim=headdim,
+            rope_fraction=rope_fraction,
+            chunk_size=chunk_size,
+            is_mimo=is_mimo,
         )
 
-        # Note: use_mamba3/headdim are image-backbone-only parameters.
+        # Note: Mamba-3-specific kwargs are image-backbone-only parameters.
         # TextMambaEncoder is a lightweight 2-layer MambaLayer adapter over
         # frozen PubMedBERT — upgrading it to Mamba3 adds complexity without
         # benefit, since the text path is not the performance bottleneck.
@@ -109,6 +115,9 @@ class TextMamba3D(nn.Module):
             use_cross_scale_skip=use_cross_scale_skip,
             use_mamba3=use_mamba3,
             headdim=headdim,
+            rope_fraction=rope_fraction,
+            chunk_size=chunk_size,
+            is_mimo=is_mimo,
         )
 
         self.img_proj = nn.Sequential(
@@ -135,6 +144,10 @@ class TextMamba3D(nn.Module):
         has_text = use_text and text_ids is not None
         if has_text:
             text_features = self.text_encoder(text_ids, attention_mask)
+            # BERT runs in fp32 even in bf16 mode; align to model precision
+            model_dtype = self.img_proj[0].weight.dtype
+            if text_features.dtype != model_dtype:
+                text_features = text_features.to(dtype=model_dtype)
             fused = self.multi_scale_attn(
                 img_features[1:], text_features, attention_mask
             )
@@ -157,6 +170,13 @@ class TextMamba3D(nn.Module):
             return seg_output, img_global, text_global, pixel_feat
         else:
             return seg_output, None, None, None
+
+    def to_bf16_with_fp32_text(self) -> "TextMamba3D":
+        """Cast model to bf16 while keeping BERT backbone in fp32."""
+        self.to(dtype=torch.bfloat16)
+        if hasattr(self.text_encoder, 'bert') and self.text_encoder.bert is not None:
+            self.text_encoder.bert = self.text_encoder.bert.to(dtype=torch.float32)
+        return self
 
     def forward_without_text(self, img: torch.Tensor) -> torch.Tensor:
         """Convenience method for inference without text guidance."""

@@ -12,22 +12,20 @@ except ImportError:
     MAMBA_AVAILABLE = False
 
 try:
-    from mamba_ssm import Mamba3  # V5.1: real Mamba-3 (ICLR 2026, arxiv 2603.15569)
+    from mamba_ssm import Mamba3
     MAMBA3_AVAILABLE = True
+    MAMBA3_IS_REAL = True
 except (ImportError, AttributeError):
-    # Fallback: Mamba2 as stand-in (V5.0 behavior)
     try:
         from mamba_ssm import Mamba2 as Mamba3
         MAMBA3_AVAILABLE = True
+        MAMBA3_IS_REAL = False
         import warnings
-        warnings.warn(
-            "Real Mamba3 not available, falling back to Mamba2. "
-            "Install from main: pip install git+https://github.com/state-spaces/mamba.git@main",
-            stacklevel=2,
-        )
+        warnings.warn("Real Mamba3 not available, falling back to Mamba2.", stacklevel=2)
     except ImportError:
         Mamba3 = None
         MAMBA3_AVAILABLE = False
+        MAMBA3_IS_REAL = False
 
 
 def _auto_headdim(d_inner: int) -> int:
@@ -46,24 +44,27 @@ def _create_ssm(
     dropout: float = 0.0,
     use_mamba3: bool = False,
     headdim: int | None = None,
+    rope_fraction: float | None = None,
+    chunk_size: int | None = None,
+    is_mimo: bool = False,
 ):
-    """Create a Mamba SSM (v1 or v2) or MLP fallback.
+    """Create a Mamba SSM (v1 or v3/fallback) or MLP fallback.
 
     Args:
         dim: Model dimension (d_model).
         d_state: SSM state expansion factor.
-        d_conv: Local convolution width (Mamba-1 only; ignored by Mamba2).
+        d_conv: Local convolution width (Mamba-1 only; ignored by Mamba3 path).
         expand: Block expansion factor.
         dropout: Dropout rate (unused by SSM; kept for API consistency).
-        use_mamba3: If True, use Mamba2 multi-head SSD.
-        headdim: Head dimension for Mamba2. Auto-selected if None.
+        use_mamba3: If True, use Mamba3 or the Mamba2 compatibility fallback.
+        headdim: Head dimension for Mamba3/Mamba2. Auto-selected if None.
             Must divide d_inner (dim * expand). Raises ValueError if invalid.
     """
     if use_mamba3:
         if not MAMBA3_AVAILABLE:
             raise ImportError(
-                "use_mamba3=True but mamba_ssm.Mamba2 is not available. "
-                "Install: pip install mamba-ssm>=2.3.1"
+                "use_mamba3=True but mamba_ssm.Mamba3/Mamba2 is not available. "
+                "Install mamba-ssm with Mamba3 support or a compatible Mamba2 fallback."
             )
         d_inner = int(dim * expand)
         hd = headdim or _auto_headdim(d_inner)
@@ -75,12 +76,15 @@ def _create_ssm(
             )
         # Note: dropout is NOT passed to Mamba3 — it may not accept this kwarg.
         # Dropout is applied externally by the enclosing block (MambaBlock, etc.).
-        return Mamba3(
-            d_model=dim,
-            d_state=d_state,
-            expand=expand,
-            headdim=hd,
-        )
+        kwargs = dict(d_model=dim, d_state=d_state, expand=expand, headdim=hd)
+        if MAMBA3_IS_REAL:
+            if rope_fraction is not None:
+                kwargs["rope_fraction"] = rope_fraction
+            if chunk_size is not None:
+                kwargs["chunk_size"] = chunk_size
+            if is_mimo:
+                kwargs["is_mimo"] = True
+        return Mamba3(**kwargs)
 
     if MAMBA_AVAILABLE:
         try:
@@ -108,12 +112,25 @@ class MambaBlock(nn.Module):
         dropout: float = 0.0,
         use_mamba3: bool = False,
         headdim: int | None = None,
+        rope_fraction: float | None = None,
+        chunk_size: int | None = None,
+        is_mimo: bool = False,
     ):
         super().__init__()
         self.dim = dim
         self.norm = nn.LayerNorm(dim)
-        self.mamba = _create_ssm(dim, d_state, d_conv, expand, dropout,
-                                 use_mamba3=use_mamba3, headdim=headdim)
+        self.mamba = _create_ssm(
+            dim,
+            d_state,
+            d_conv,
+            expand,
+            dropout,
+            use_mamba3=use_mamba3,
+            headdim=headdim,
+            rope_fraction=rope_fraction,
+            chunk_size=chunk_size,
+            is_mimo=is_mimo,
+        )
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -139,11 +156,24 @@ class MambaLayer(nn.Module):
         dropout: float = 0.0,
         use_mamba3: bool = False,
         headdim: int | None = None,
+        rope_fraction: float | None = None,
+        chunk_size: int | None = None,
+        is_mimo: bool = False,
     ):
         super().__init__()
         self.blocks = nn.ModuleList([
-            MambaBlock(dim, d_state, d_conv, expand, dropout,
-                       use_mamba3=use_mamba3, headdim=headdim)
+            MambaBlock(
+                dim,
+                d_state,
+                d_conv,
+                expand,
+                dropout,
+                use_mamba3=use_mamba3,
+                headdim=headdim,
+                rope_fraction=rope_fraction,
+                chunk_size=chunk_size,
+                is_mimo=is_mimo,
+            )
             for _ in range(depth)
         ])
 
@@ -174,11 +204,24 @@ class BiMambaBlock(nn.Module):
         dropout: float = 0.0,
         use_mamba3: bool = False,
         headdim: int | None = None,
+        rope_fraction: float | None = None,
+        chunk_size: int | None = None,
+        is_mimo: bool = False,
     ):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
-        ssm_kw = dict(dim=dim, d_state=d_state, d_conv=d_conv, expand=expand,
-                      dropout=dropout, use_mamba3=use_mamba3, headdim=headdim)
+        ssm_kw = dict(
+            dim=dim,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+            dropout=dropout,
+            use_mamba3=use_mamba3,
+            headdim=headdim,
+            rope_fraction=rope_fraction,
+            chunk_size=chunk_size,
+            is_mimo=is_mimo,
+        )
         self.forward_ssm = _create_ssm(**ssm_kw)
         self.backward_ssm = _create_ssm(**ssm_kw)
         self.merge = nn.Linear(dim * 2, dim)
@@ -216,11 +259,24 @@ class BiMambaLayer(nn.Module):
         dropout: float = 0.0,
         use_mamba3: bool = False,
         headdim: int | None = None,
+        rope_fraction: float | None = None,
+        chunk_size: int | None = None,
+        is_mimo: bool = False,
     ):
         super().__init__()
         self.blocks = nn.ModuleList([
-            BiMambaBlock(dim, d_state, d_conv, expand, dropout,
-                         use_mamba3=use_mamba3, headdim=headdim)
+            BiMambaBlock(
+                dim,
+                d_state,
+                d_conv,
+                expand,
+                dropout,
+                use_mamba3=use_mamba3,
+                headdim=headdim,
+                rope_fraction=rope_fraction,
+                chunk_size=chunk_size,
+                is_mimo=is_mimo,
+            )
             for _ in range(depth)
         ])
 
@@ -257,6 +313,9 @@ class CrossScanBiMamba3DBlock(nn.Module):
         dropout: float = 0.0,
         use_mamba3: bool = False,
         headdim: int | None = None,
+        rope_fraction: float | None = None,
+        chunk_size: int | None = None,
+        is_mimo: bool = False,
     ):
         super().__init__()
         self.spatial_dims = spatial_dims  # (D, H, W) at this stage
@@ -266,8 +325,18 @@ class CrossScanBiMamba3DBlock(nn.Module):
         self.dwconv = nn.Conv3d(dim, dim, kernel_size=3, padding=1, groups=dim, bias=False)
 
         # One SSM per axis ordering
-        ssm_kw = dict(dim=dim, d_state=d_state, d_conv=d_conv, expand=expand,
-                      dropout=dropout, use_mamba3=use_mamba3, headdim=headdim)
+        ssm_kw = dict(
+            dim=dim,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+            dropout=dropout,
+            use_mamba3=use_mamba3,
+            headdim=headdim,
+            rope_fraction=rope_fraction,
+            chunk_size=chunk_size,
+            is_mimo=is_mimo,
+        )
         self.dhw_fwd = _create_ssm(**ssm_kw)
         self.hwd_fwd = _create_ssm(**ssm_kw)
         self.wdh_fwd = _create_ssm(**ssm_kw)
@@ -276,9 +345,6 @@ class CrossScanBiMamba3DBlock(nn.Module):
         self.merge = nn.Linear(dim * 3, dim)
         self.gelu = nn.GELU()
         self.dropout = nn.Dropout(dropout)
-
-        # Multi-scale: 2x downsampled bidirectional scan (Multi-Scale VMamba)
-        self.use_multiscale = False
 
         # Uncertainty-aware feature gating (UD-Mamba inspired)
         # At init: bias=0 => 2*sigmoid(0)=1.0 => identity-preserving
@@ -346,12 +412,26 @@ class CrossScanBiMamba3DLayer(nn.Module):
         use_checkpoint: bool = False,
         use_mamba3: bool = False,
         headdim: int | None = None,
+        rope_fraction: float | None = None,
+        chunk_size: int | None = None,
+        is_mimo: bool = False,
     ):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.blocks = nn.ModuleList([
-            CrossScanBiMamba3DBlock(dim, spatial_dims, d_state, d_conv, expand,
-                                    dropout, use_mamba3=use_mamba3, headdim=headdim)
+            CrossScanBiMamba3DBlock(
+                dim,
+                spatial_dims,
+                d_state,
+                d_conv,
+                expand,
+                dropout,
+                use_mamba3=use_mamba3,
+                headdim=headdim,
+                rope_fraction=rope_fraction,
+                chunk_size=chunk_size,
+                is_mimo=is_mimo,
+            )
             for _ in range(depth)
         ])
 

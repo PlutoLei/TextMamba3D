@@ -150,18 +150,30 @@ class TextMamba3DInference:
         text_max_len = self.config['model'].get('text_max_len', 128)
         use_pretrained_text = self.config['model'].get('use_pretrained_text', True)
 
+        m = self.config['model']
+        t = self.config.get('training', {})
         self.model = TextMamba3D(
-            img_size=tuple(self.config['model']['img_size']),
-            in_channels=self.config['model']['in_channels'],
-            out_channels=self.config['model']['out_channels'],
-            embed_dim=self.config['model']['embed_dim'],
-            depths=self.config['model']['depths'],
-            text_embed_dim=self.config['model']['text_embed_dim'],
+            img_size=tuple(m['img_size']),
+            in_channels=m['in_channels'],
+            out_channels=m['out_channels'],
+            embed_dim=m['embed_dim'],
+            depths=m['depths'],
+            d_state=m.get('d_state', 16),
+            dropout=m.get('dropout', 0.0),
+            text_embed_dim=m['text_embed_dim'],
             text_max_len=text_max_len,
             use_pretrained_text=use_pretrained_text,
-            use_text_gate=self.config['model'].get('use_text_gate', False),
-            use_cross_scale_skip=self.config['model'].get('use_cross_scale_skip', False),
-            text_gate_init_bias=self.config['model'].get('text_gate_init_bias', 2.0),
+            unfreeze_text_layers=m.get('unfreeze_text_layers', 0),
+            deep_supervision=t.get('deep_supervision', False),
+            use_text_gate=m.get('use_text_gate', False),
+            use_cross_scale_skip=m.get('use_cross_scale_skip', False),
+            text_gate_init_bias=m.get('text_gate_init_bias', 2.0),
+            use_mamba3=m.get('use_mamba3', False),
+            headdim=m.get('headdim', None),
+            rope_fraction=m.get('rope_fraction', None),
+            chunk_size=m.get('chunk_size', None),
+            is_mimo=m.get('is_mimo', False),
+            fusion_type=m.get('fusion_type', 'seqca'),
         ).to(self.device)
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
@@ -181,7 +193,8 @@ class TextMamba3DInference:
         """Initialize tokenizer with fallback."""
         try:
             from transformers import AutoTokenizer
-            return AutoTokenizer.from_pretrained(TextMambaEncoder.PUBMEDBERT_NAME)
+            tokenizer_path = self.config['model'].get('text_model_path') or TextMambaEncoder.PUBMEDBERT_NAME
+            return AutoTokenizer.from_pretrained(tokenizer_path)
         except ImportError:
             print('Warning: transformers not installed, using fallback tokenization')
             return None

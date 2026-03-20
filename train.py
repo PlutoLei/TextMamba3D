@@ -10,7 +10,6 @@ from typing import Optional
 import numpy as np
 import torch
 import yaml
-from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -22,7 +21,7 @@ from data.brats_textbrats_dataset import TextBraTSDataset
 from losses import CombinedLoss
 from models import TextMamba3D
 from models.text_encoder import TextMambaEncoder
-from utils.metrics import dice_score, dice_score_brats_regions
+from utils.metrics import dice_score_brats_regions
 
 
 def parse_args() -> argparse.Namespace:
@@ -86,10 +85,13 @@ def get_lr(epoch: int, warmup_epochs: int, base_lr: float, total_epochs: int) ->
     )
 
 
+from utils.precision import get_amp_context
+
+
 def train_epoch(
     model, loader, criterion, optimizer, device, epoch,
     scaler=None, use_amp=False, no_text_ratio=0.1, grad_accum=1,
-    need_features=True, clip_norm=1.0,
+    need_features=True, clip_norm=1.0, bf16_mode=None,
 ) -> tuple[float, float]:
     model.train()
     total_loss = 0.0
@@ -100,6 +102,8 @@ def train_epoch(
     pbar = tqdm(loader, desc=f'Epoch {epoch}')
     for batch_idx, batch in enumerate(pbar):
         image = batch['image'].to(device)
+        if bf16_mode == 'pure':
+            image = image.to(dtype=torch.bfloat16)
         mask = batch['mask'].to(device)
         text_ids = batch['text_ids'].to(device)
         attn_mask = batch.get('attention_mask')
@@ -107,7 +111,7 @@ def train_epoch(
             attn_mask = attn_mask.to(device)
         use_text = np.random.random() > no_text_ratio
 
-        with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+        with get_amp_context(bf16_mode, use_amp):
             if need_features and use_text:
                 pred, img_feat, text_feat, pixel_feat = model(
                     image,
@@ -189,7 +193,9 @@ def train_epoch(
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device, use_amp=True, use_text=True) -> tuple[float, float]:
+def validate(
+    model, loader, criterion, device, use_amp=True, use_text=True, bf16_mode=None
+) -> tuple[float, float]:
     """Validate model with or without text guidance."""
     model.eval()
     total_loss = 0.0
@@ -198,6 +204,8 @@ def validate(model, loader, criterion, device, use_amp=True, use_text=True) -> t
     desc = 'Validating' if use_text else 'Validating (no-text)'
     for batch in tqdm(loader, desc=desc):
         image = batch['image'].to(device)
+        if bf16_mode == 'pure':
+            image = image.to(dtype=torch.bfloat16)
         mask = batch['mask'].to(device)
         text_ids = batch['text_ids'].to(device) if use_text else None
         attn_mask = batch.get('attention_mask')
@@ -206,7 +214,7 @@ def validate(model, loader, criterion, device, use_amp=True, use_text=True) -> t
         else:
             attn_mask = None
 
-        with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+        with get_amp_context(bf16_mode, use_amp):
             pred = model(
                 image, text_ids, attention_mask=attn_mask,
                 return_features=False, use_text=use_text
@@ -250,6 +258,9 @@ def main():
     if args.no_amp:
         use_amp = False
     use_amp = use_amp and device.type == 'cuda'
+    bf16_mode = config['training'].get('bf16_mode', None)
+    if bf16_mode == 'pure':
+        use_amp = False
     # Resolve CLI overrides vs config defaults
     no_text_ratio = args.no_text_ratio if args.no_text_ratio is not None else config['training'].get('no_text_ratio', 0.1)
     grad_accum = args.grad_accum if args.grad_accum is not None else config['training'].get('gradient_accumulation', 1)
@@ -370,6 +381,9 @@ def main():
         print('Deep supervision: ENABLED (aux heads at intermediate decoder stages)')
 
     use_mamba3 = config['model'].get('use_mamba3', False)
+    rope_fraction = config['model'].get('rope_fraction', None)
+    chunk_size = config['model'].get('chunk_size', None)
+    is_mimo = config['model'].get('is_mimo', False)
     model = TextMamba3D(
         img_size=tuple(config['model']['img_size']),
         in_channels=config['model']['in_channels'],
@@ -390,8 +404,15 @@ def main():
         text_gate_init_bias=config['model'].get('text_gate_init_bias', 2.0),
         use_mamba3=use_mamba3,
         headdim=config['model'].get('headdim', None),
+        rope_fraction=rope_fraction,
+        chunk_size=chunk_size,
+        is_mimo=is_mimo,
         fusion_type=config['model'].get('fusion_type', 'seqca'),
     ).to(device)
+
+    if bf16_mode == 'pure':
+        model.to_bf16_with_fp32_text()
+        print('Pure bf16 mode: model bf16, BERT fp32')
 
     if use_mamba3:
         print(f'SSM Backend: Mamba-3 (d_state={config["model"].get("d_state", 16)}, '
@@ -482,15 +503,20 @@ def main():
         train_loss, max_grad_norm = train_epoch(
             model, train_loader, criterion, optimizer, device, epoch,
             scaler=scaler, use_amp=use_amp, no_text_ratio=no_text_ratio,
-            grad_accum=grad_accum, need_features=need_features, clip_norm=cfg_clip
+            grad_accum=grad_accum, need_features=need_features, clip_norm=cfg_clip,
+            bf16_mode=bf16_mode,
         )
 
         # Validate with text (standard mode)
-        val_loss, val_dice = validate(model, val_loader, criterion, device, use_amp=use_amp, use_text=True)
+        val_loss, val_dice = validate(
+            model, val_loader, criterion, device, use_amp=use_amp,
+            use_text=True, bf16_mode=bf16_mode
+        )
 
         # Validate without text (fair evaluation mode)
         val_loss_no_text, val_dice_no_text = validate(
-            model, val_loader, criterion, device, use_amp=use_amp, use_text=False
+            model, val_loader, criterion, device, use_amp=use_amp,
+            use_text=False, bf16_mode=bf16_mode
         )
 
         # Log
@@ -553,7 +579,7 @@ def main():
             print(f'\nEarly stopping triggered at epoch {epoch}')
             break
 
-    print(f'\nTraining complete!')
+    print('\nTraining complete!')
     print(f'Best Dice (with text): {best_dice:.4f}')
     print(f'Best Dice (no text):   {best_dice_no_text:.4f}')
     writer.close()

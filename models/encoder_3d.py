@@ -142,6 +142,9 @@ class MambaEncoder3D(nn.Module):
         use_checkpoint: bool = False,
         use_mamba3: bool = False,
         headdim: int | None = None,
+        rope_fraction: float | None = None,
+        chunk_size: int | None = None,
+        is_mimo: bool = False,
     ):
         super().__init__()
         self.num_stages = len(depths)
@@ -184,6 +187,9 @@ class MambaEncoder3D(nn.Module):
                 use_checkpoint=use_checkpoint,
                 use_mamba3=use_mamba3,
                 headdim=headdim,
+                rope_fraction=rope_fraction,
+                chunk_size=chunk_size,
+                is_mimo=is_mimo,
             )
             self.stages.append(stage)
 
