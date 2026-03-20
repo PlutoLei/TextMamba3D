@@ -69,14 +69,15 @@ class CombinedLoss(nn.Module):
     ) -> dict[str, torch.Tensor]:
         losses = {}
 
-        # Only compute losses with nonzero weights
-        # NaN is NOT masked here — let it propagate to training loop for proper skip
+        # All loss computation in fp32 (bf16 backward kernels missing for some ops)
+        pred = pred.float()
+
+        ce_w = self.ce_class_weights.float() if self.ce_class_weights is not None else None
         losses['dice'] = (
             self.dice_loss(pred, target) if self.dice_weight else self._zero(pred)
         )
-        ce_w = self.ce_class_weights.float() if self.ce_class_weights is not None else None
         losses['ce'] = (
-            F.cross_entropy(pred.float(), target, weight=ce_w)
+            F.cross_entropy(pred, target, weight=ce_w)
             if self.ce_weight else self._zero(pred)
         )
         losses['edge'] = (
@@ -114,9 +115,9 @@ class CombinedLoss(nn.Module):
             ds_loss = self._zero(pred)
             target_size = target.shape[1:]  # (D, H, W)
             for w, aux in zip(self.DS_WEIGHTS, aux_preds):
-                aux_up = F.interpolate(aux, size=target_size, mode='trilinear', align_corners=False)
+                aux_up = F.interpolate(aux, size=target_size, mode='trilinear', align_corners=False).float()
                 aux_dice = self.dice_loss(aux_up, target)
-                aux_ce = F.cross_entropy(aux_up.float(), target, weight=ce_w)
+                aux_ce = F.cross_entropy(aux_up, target, weight=ce_w)
                 ds_loss = ds_loss + w * (aux_dice + aux_ce)
             losses['deep_supervision'] = ds_loss
             total_with_ds = losses['total'] + ds_loss
