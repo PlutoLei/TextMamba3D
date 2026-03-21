@@ -73,11 +73,18 @@ def _create_ssm(
             )
         if dim < _MAMBA3_MIN_DIM:
             import warnings
+            d_inner = int(dim * expand)
+            hd = headdim or _auto_headdim(d_inner)
             warnings.warn(
                 f"Mamba3 backward crashes for d_model={dim} < {_MAMBA3_MIN_DIM}. "
-                f"Falling back to Mamba-1 for this layer.",
+                f"Falling back to Mamba-2 for this layer.",
                 stacklevel=2,
             )
+            try:
+                from mamba_ssm import Mamba2
+                return Mamba2(d_model=dim, d_state=d_state, expand=expand, headdim=hd)
+            except (ImportError, Exception):
+                pass  # fall through to Mamba-1
         else:
             d_inner = int(dim * expand)
             hd = headdim or _auto_headdim(d_inner)
