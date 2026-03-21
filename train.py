@@ -270,6 +270,7 @@ def main():
         val_ratio = config['data'].get('val_ratio', 0.0)
         et_enriched = config['data'].get('et_enriched', False)
         enriched_prob = config['data'].get('enriched_prob', 0.5)
+        use_keyword_text = config['data'].get('use_keyword_text', False)
 
         train_dataset = TextBraTSDataset(
             data_dir=config['data']['data_dir'],
@@ -281,6 +282,7 @@ def main():
             val_ratio=val_ratio,
             et_enriched=et_enriched,
             enriched_prob=enriched_prob,
+            use_keyword_text=use_keyword_text,
         )
         val_dataset = TextBraTSDataset(
             data_dir=config['data']['data_dir'],
@@ -292,6 +294,7 @@ def main():
             val_ratio=val_ratio,
             et_enriched=et_enriched,
             enriched_prob=enriched_prob,
+            use_keyword_text=use_keyword_text,
         )
     else:
         # 原始 BraTS2021 数据集 (自动生成文本)
