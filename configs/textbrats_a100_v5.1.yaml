@@ -8,7 +8,7 @@ data:
   data_dir: "./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
   dataset_type: "textbrats"
   patch_size: [128, 128, 128]
-  batch_size: 1                  # batch=1 to avoid Mamba3 Triton autotuner crash (GitHub #732)
+  batch_size: 2                  # Stage 0 uses Mamba1 (no Triton crash), Stages 1-3 use Mamba3
   num_workers: 4
   train_ratio: 0.596
   val_ratio: 0.149
@@ -55,7 +55,7 @@ training:
   warmup_epochs: 10
   contrastive_warmup_epochs: 30
   patience: 40
-  gradient_accumulation: 4       # batch=1 * accum=4 = effective batch 4
+  gradient_accumulation: 2       # batch=2 * accum=2 = effective batch 4
   gradient_checkpointing: false   # Mamba-3 incompatible with torch checkpoint
   deep_supervision: true
   ds_weights: [0.2, 0.1, 0.05]

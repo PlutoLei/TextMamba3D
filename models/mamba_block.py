@@ -60,31 +60,42 @@ def _create_ssm(
         headdim: Head dimension for Mamba3/Mamba2. Auto-selected if None.
             Must divide d_inner (dim * expand). Raises ValueError if invalid.
     """
+    # Mamba3 Triton backward kernel crashes for d_model<96 (d_inner<192, nheads<3).
+    # Verified: dim=48 fails on all seq_len/batch combos; dim>=96 works.
+    # Fallback to Mamba-1 for small dims — only affects Stage 0 (embed_dim=48).
+    _MAMBA3_MIN_DIM = 96
+
     if use_mamba3:
         if not MAMBA3_AVAILABLE:
             raise ImportError(
                 "use_mamba3=True but mamba_ssm.Mamba3/Mamba2 is not available. "
                 "Install mamba-ssm with Mamba3 support or a compatible Mamba2 fallback."
             )
-        d_inner = int(dim * expand)
-        hd = headdim or _auto_headdim(d_inner)
-        if d_inner % hd != 0:
-            raise ValueError(
-                f"headdim={hd} does not divide d_inner={d_inner} "
-                f"(dim={dim}, expand={expand}). "
-                f"Valid headdim values: {[h for h in [64, 48, 32, 24, 16] if d_inner % h == 0]}"
+        if dim < _MAMBA3_MIN_DIM:
+            import warnings
+            warnings.warn(
+                f"Mamba3 backward crashes for d_model={dim} < {_MAMBA3_MIN_DIM}. "
+                f"Falling back to Mamba-1 for this layer.",
+                stacklevel=2,
             )
-        # Note: dropout is NOT passed to Mamba3 — it may not accept this kwarg.
-        # Dropout is applied externally by the enclosing block (MambaBlock, etc.).
-        kwargs = dict(d_model=dim, d_state=d_state, expand=expand, headdim=hd)
-        if MAMBA3_IS_REAL:
-            if rope_fraction is not None:
-                kwargs["rope_fraction"] = rope_fraction
-            if chunk_size is not None:
-                kwargs["chunk_size"] = chunk_size
-            if is_mimo:
-                kwargs["is_mimo"] = True
-        return Mamba3(**kwargs)
+        else:
+            d_inner = int(dim * expand)
+            hd = headdim or _auto_headdim(d_inner)
+            if d_inner % hd != 0:
+                raise ValueError(
+                    f"headdim={hd} does not divide d_inner={d_inner} "
+                    f"(dim={dim}, expand={expand}). "
+                    f"Valid headdim values: {[h for h in [64, 48, 32, 24, 16] if d_inner % h == 0]}"
+                )
+            kwargs = dict(d_model=dim, d_state=d_state, expand=expand, headdim=hd)
+            if MAMBA3_IS_REAL:
+                if rope_fraction is not None:
+                    kwargs["rope_fraction"] = rope_fraction
+                if chunk_size is not None:
+                    kwargs["chunk_size"] = chunk_size
+                if is_mimo:
+                    kwargs["is_mimo"] = True
+            return Mamba3(**kwargs)
 
     if MAMBA_AVAILABLE:
         try:
