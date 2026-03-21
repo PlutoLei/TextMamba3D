@@ -57,7 +57,7 @@ training:
   patience: 40
   gradient_accumulation: 4       # batch=1 * accum=4 = effective batch 4
   gradient_checkpointing: false   # Mamba-3 incompatible with torch checkpoint
-  deep_supervision: false          # Disabled: bf16 backward fails through aux head path
+  deep_supervision: true
   ds_weights: [0.2, 0.1, 0.05]
   use_amp: false                 # Mamba-3 paper trains with explicit bf16 (Appendix D), not autocast
   bf16_mode: "pure"              # Model bf16, BERT fp32. Loss computed in fp32.

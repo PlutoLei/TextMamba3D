@@ -69,8 +69,19 @@ class CombinedLoss(nn.Module):
     ) -> dict[str, torch.Tensor]:
         losses = {}
 
-        # All loss computation in fp32 (bf16 backward kernels missing for some ops)
+        # Cast ALL inputs to fp32 — entire loss computation runs in fp32.
+        # bf16 model outputs lack backward kernels for some loss ops (interpolate,
+        # sqrt, normalize). PyTorch autograd handles fp32→bf16 gradient flow at
+        # the .float() boundary automatically.
         pred = pred.float()
+        if img_feat is not None:
+            img_feat = img_feat.float()
+        if text_feat is not None:
+            text_feat = text_feat.float()
+        if pixel_feat is not None:
+            pixel_feat = pixel_feat.float()
+        if aux_preds is not None:
+            aux_preds = [a.float() for a in aux_preds]
 
         ce_w = self.ce_class_weights.float() if self.ce_class_weights is not None else None
         losses['dice'] = (
@@ -115,7 +126,7 @@ class CombinedLoss(nn.Module):
             ds_loss = self._zero(pred)
             target_size = target.shape[1:]  # (D, H, W)
             for w, aux in zip(self.DS_WEIGHTS, aux_preds):
-                aux_up = F.interpolate(aux.float(), size=target_size, mode='trilinear', align_corners=False)
+                aux_up = F.interpolate(aux, size=target_size, mode='trilinear', align_corners=False)
                 aux_dice = self.dice_loss(aux_up, target)
                 aux_ce = F.cross_entropy(aux_up, target, weight=ce_w)
                 ds_loss = ds_loss + w * (aux_dice + aux_ce)

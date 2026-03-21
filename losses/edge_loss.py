@@ -29,9 +29,10 @@ class EdgeLoss(nn.Module):
     def get_edge_mask(self, target: torch.Tensor) -> torch.Tensor:
         target_float = target.float().unsqueeze(1)
 
-        gx = F.conv3d(target_float, self.sobel_x, padding=1)
-        gy = F.conv3d(target_float, self.sobel_y, padding=1)
-        gz = F.conv3d(target_float, self.sobel_z, padding=1)
+        # Sobel kernels may be bf16 after model.to(bf16) — force fp32 for conv
+        gx = F.conv3d(target_float, self.sobel_x.float(), padding=1)
+        gy = F.conv3d(target_float, self.sobel_y.float(), padding=1)
+        gz = F.conv3d(target_float, self.sobel_z.float(), padding=1)
         edge = torch.sqrt(torch.clamp_min(gx**2 + gy**2 + gz**2, 0.0))
         edge = edge / torch.clamp_min(edge.amax(dim=(-3, -2, -1), keepdim=True), 1e-4)
         return edge
