@@ -10,6 +10,7 @@ import numpy as np
 import nibabel as nib
 from torch.utils.data import Dataset
 from typing import Optional, Callable, List
+from .keyword_extractor import build_keyword_text
 
 
 class TextBraTSDataset(Dataset):
@@ -43,6 +44,7 @@ class TextBraTSDataset(Dataset):
         seed: int = 42,
         et_enriched: bool = False,  # 是否启用 ET-enriched 文本
         enriched_prob: float = 0.5,  # 训练时使用 enriched 文本的概率
+        use_keyword_text: bool = False,  # 是否将全文转成结构化关键词
     ):
         self.data_dir = data_dir
         self.split = split
@@ -52,6 +54,7 @@ class TextBraTSDataset(Dataset):
         self.use_text_features = use_text_features
         self.et_enriched = et_enriched
         self.enriched_prob = enriched_prob
+        self.use_keyword_text = use_keyword_text
 
         # Find all cases and split
         all_cases = self._find_cases()
@@ -227,6 +230,9 @@ class TextBraTSDataset(Dataset):
         else:
             text = original_text
 
+        if self.use_keyword_text:
+            text = build_keyword_text(text)
+
         # Tokenize text
         if self.tokenizer:
             tokens = self.tokenizer(
@@ -273,6 +279,7 @@ def get_textbrats_dataloaders(
     train_ratio: float = 0.8,
     et_enriched: bool = False,
     enriched_prob: float = 0.5,
+    use_keyword_text: bool = False,
 ):
     """Create train and validation dataloaders for TextBraTS."""
     from torch.utils.data import DataLoader
@@ -286,6 +293,7 @@ def get_textbrats_dataloaders(
         train_ratio=train_ratio,
         et_enriched=et_enriched,
         enriched_prob=enriched_prob,
+        use_keyword_text=use_keyword_text,
     )
 
     val_dataset = TextBraTSDataset(
@@ -297,6 +305,7 @@ def get_textbrats_dataloaders(
         train_ratio=train_ratio,
         et_enriched=et_enriched,
         enriched_prob=enriched_prob,
+        use_keyword_text=use_keyword_text,
     )
 
     train_loader = DataLoader(
