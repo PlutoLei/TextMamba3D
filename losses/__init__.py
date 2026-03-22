@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .dice_loss import DiceLoss, BRATS_CLASS_WEIGHTS
+from .focal_tversky_loss import FocalTverskyLoss
 from .edge_loss import EdgeLoss
 from .contrastive_loss import ContrastiveLoss, ForegroundContrastiveLoss
 
@@ -27,6 +28,11 @@ class CombinedLoss(nn.Module):
         feat_dim: int = 384,
         text_dim: int = 256,
         class_weights: list[float] | None = None,
+        # V5.2: Focal Tversky Loss
+        use_ftl: bool = False,
+        ftl_alpha: float = 0.3,
+        ftl_beta: float = 0.7,
+        ftl_gamma: float = 1.33,
     ) -> None:
         super().__init__()
         self.dice_weight = dice_weight
@@ -34,7 +40,13 @@ class CombinedLoss(nn.Module):
         self.edge_weight = edge_weight
         self.contrastive_weight = contrastive_weight
 
-        self.dice_loss = DiceLoss(class_weights=class_weights)
+        if use_ftl:
+            self.dice_loss = FocalTverskyLoss(
+                alpha=ftl_alpha, beta=ftl_beta, gamma=ftl_gamma,
+                class_weights=class_weights,
+            )
+        else:
+            self.dice_loss = DiceLoss(class_weights=class_weights)
         self.edge_loss = EdgeLoss()
         self.contrastive_loss = ContrastiveLoss(temperature)
         self.fg_contrastive_loss = ForegroundContrastiveLoss(

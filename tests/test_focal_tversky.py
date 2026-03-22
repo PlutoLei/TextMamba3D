@@ -81,3 +81,43 @@ class TestFocalTverskyLoss:
         loss_high = ftl_high_gamma(pred, target)
         assert loss_low.item() >= 0
         assert loss_high.item() >= 0
+
+
+class TestFTLIntegration:
+    def test_combined_loss_uses_ftl(self):
+        from losses import CombinedLoss
+        from losses.focal_tversky_loss import FocalTverskyLoss
+
+        criterion = CombinedLoss(
+            use_ftl=True,
+            ftl_alpha=0.3, ftl_beta=0.7, ftl_gamma=1.33,
+            class_weights=[0.25, 3.0, 1.0, 4.0],
+        )
+        assert isinstance(criterion.dice_loss, FocalTverskyLoss)
+
+        pred = torch.randn(1, 4, 8, 8, 8, requires_grad=True)
+        target = torch.randint(0, 4, (1, 8, 8, 8))
+        losses = criterion(pred, target)
+        assert losses['total'].item() > 0
+        losses['total'].backward()
+        assert pred.grad is not None
+
+    def test_combined_loss_default_uses_dice(self):
+        from losses import CombinedLoss
+        from losses.dice_loss import DiceLoss
+
+        criterion = CombinedLoss(class_weights=[0.25, 3.0, 1.0, 4.0])
+        assert isinstance(criterion.dice_loss, DiceLoss)
+
+    def test_combined_loss_ftl_deep_supervision(self):
+        from losses import CombinedLoss
+
+        criterion = CombinedLoss(
+            use_ftl=True,
+            class_weights=[0.25, 3.0, 1.0, 4.0],
+        )
+        pred = torch.randn(1, 4, 16, 16, 16, requires_grad=True)
+        target = torch.randint(0, 4, (1, 16, 16, 16))
+        aux = [torch.randn(1, 4, 8, 8, 8), torch.randn(1, 4, 4, 4, 4)]
+        losses = criterion(pred, target, aux_preds=aux)
+        assert losses['deep_supervision'].item() > 0
