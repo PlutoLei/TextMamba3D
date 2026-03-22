@@ -27,6 +27,7 @@ model:
   unfreeze_text_layers: 2
   text_model_path: null
   use_mamba3: true   # Must match V5.0 (Mamba2) for checkpoint compatibility
+  headdim: 48        # Must match V5.0 checkpoint (nheads = d_inner / headdim)
   fusion_type: seqca
   use_edge_enhance: false
 
