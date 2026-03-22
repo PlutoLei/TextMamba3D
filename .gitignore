@@ -22,3 +22,5 @@ nexus_state.json
 TextBraTS_data.zip
 docs/plans/
 docs/papers/**/*.pdf
+.ruff_cache/
+.crossfire/
