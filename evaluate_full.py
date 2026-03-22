@@ -22,7 +22,7 @@ from utils.sliding_window import gaussian_weight_3d
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Full-volume evaluation with sliding window')
-    parser.add_argument('--config', type=str, default='configs/textbrats_a100.yaml')
+    parser.add_argument('--config', type=str, default='configs/a100.yaml')
     parser.add_argument('--checkpoint', type=str, required=True)
     parser.add_argument('--split', type=str, default='test', choices=['val', 'test'])
     parser.add_argument('--use-text', action='store_true', default=True)
