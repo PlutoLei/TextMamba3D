@@ -480,7 +480,16 @@ def main():
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint['model'])
+        # V5.2: use strict=False when loading checkpoint with new modules (e.g., EdgeEnhance3D)
+        result = model.load_state_dict(checkpoint['model'], strict=False)
+        if result.missing_keys:
+            print(f'Missing keys (new modules, will be randomly initialized): {len(result.missing_keys)}')
+            for k in result.missing_keys[:10]:
+                print(f'  {k}')
+        if result.unexpected_keys:
+            print(f'Unexpected keys (ignored): {len(result.unexpected_keys)}')
+            for k in result.unexpected_keys[:10]:
+                print(f'  {k}')
         optimizer.load_state_dict(checkpoint['optimizer'])
         if scaler is not None and checkpoint.get('scaler') is not None:
             scaler.load_state_dict(checkpoint['scaler'])
