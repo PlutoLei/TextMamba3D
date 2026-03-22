@@ -48,6 +48,7 @@ class EdgeEnhance3D(nn.Module):
             [B, N, C] boundary-enhanced features
         """
         D, H, W = self.spatial_dims
+        assert x.shape[1] == D * H * W, f"Expected N={D*H*W}, got {x.shape[1]}"
         x_3d = rearrange(x, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
 
         attn = torch.sigmoid(self.conv(x_3d))

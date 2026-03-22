@@ -13,10 +13,11 @@ class TestEdgeEnhance3D:
     def test_near_identity_at_init(self):
         from models.edge_enhance import EdgeEnhance3D
         ee = EdgeEnhance3D(channels=48, spatial_dims=(8, 8, 8))
-        x = torch.randn(1, 512, 48)
+        x = torch.randn(1, 512, 48) + 5.0  # Shift away from zero for stable ratio
         out = ee(x)
-        ratio = out.mean() / x.mean()
-        assert 0.9 < ratio.item() < 1.2
+        # With zero weights and bias=-3, conv outputs constant -3
+        # sigmoid(-3) ~ 0.047, so out ~ x * 1.047
+        assert torch.allclose(out, x * 1.047, atol=0.15)
 
     def test_backward_pass(self):
         from models.edge_enhance import EdgeEnhance3D
