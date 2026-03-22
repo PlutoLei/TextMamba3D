@@ -45,6 +45,7 @@ class MambaDecoder3D(nn.Module):
         use_checkpoint: bool = False,
         deep_supervision: bool = False,
         use_cross_scale_skip: bool = False,
+        use_edge_enhance: bool = False,
         use_mamba3: bool = False,
         headdim: int | None = None,
         rope_fraction: float | None = None,
@@ -55,6 +56,7 @@ class MambaDecoder3D(nn.Module):
         self.num_stages = len(depths)
         self.deep_supervision = deep_supervision
         self.use_cross_scale_skip = use_cross_scale_skip
+        self.use_edge_enhance = use_edge_enhance
 
         d, h, w = img_size[0] // patch_size[0], \
                   img_size[1] // patch_size[1], \
@@ -66,6 +68,12 @@ class MambaDecoder3D(nn.Module):
 
         # V4.6: cross-scale attention modules (one per skip connection)
         self.cross_scale_attns = nn.ModuleList() if use_cross_scale_skip else None
+
+        # V5.2: edge enhancement modules (one per skip connection)
+        if use_edge_enhance:
+            from .edge_enhance import EdgeEnhance3D
+            self._edge_enhance_cls = EdgeEnhance3D
+        self.edge_enhances = nn.ModuleList() if use_edge_enhance else None
 
         skip_count = 0
 
@@ -99,6 +107,14 @@ class MambaDecoder3D(nn.Module):
                 # Original skip projection (ALWAYS present)
                 skip_proj = nn.Linear(dim // 2, dim // 2)
                 self.skip_projs.append(skip_proj)
+
+                # V5.2: edge enhancement on skip features
+                if use_edge_enhance:
+                    skip_dim = dim // 2
+                    skip_spatial = (d // (2 ** (i - 1)), h // (2 ** (i - 1)), w // (2 ** (i - 1)))
+                    self.edge_enhances.append(
+                        self._edge_enhance_cls(channels=skip_dim, spatial_dims=skip_spatial)
+                    )
 
                 # V4.6: cross-scale attention (supplemental)
                 if use_cross_scale_skip:
@@ -160,6 +176,10 @@ class MambaDecoder3D(nn.Module):
                     # Original matched-level skip (always)
                     skip = self.skip_projs[i](features[skip_idx])
                     x = x + skip
+
+                    # V5.2: Edge Enhancement on skip features
+                    if self.use_edge_enhance and self.edge_enhances is not None:
+                        x = self.edge_enhances[i](x)
 
                     # V4.6: cross-scale supplemental attention
                     if self.use_cross_scale_skip and self.cross_scale_attns is not None:

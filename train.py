@@ -408,6 +408,7 @@ def main():
         chunk_size=chunk_size,
         is_mimo=is_mimo,
         fusion_type=config['model'].get('fusion_type', 'seqca'),
+        use_edge_enhance=config['model'].get('use_edge_enhance', False),
     ).to(device)
 
     if bf16_mode == 'pure':
@@ -438,6 +439,11 @@ def main():
         feat_dim=config['model']['embed_dim'] * (2 ** (len(config['model']['depths']) - 1)),
         text_dim=config['model']['text_embed_dim'],
         class_weights=class_weights,
+        # V5.2: Focal Tversky Loss
+        use_ftl=config['loss'].get('use_ftl', False),
+        ftl_alpha=config['loss'].get('ftl_alpha', 0.3),
+        ftl_beta=config['loss'].get('ftl_beta', 0.7),
+        ftl_gamma=config['loss'].get('ftl_gamma', 1.33),
     ).to(device)
 
     # Optimizer

@@ -45,6 +45,8 @@ class TextMamba3D(nn.Module):
         is_mimo: bool = False,
         # Fusion module selection
         fusion_type: str = "seqca",  # "seqca" | "pixeltext"
+        # V5.2 Edge Enhancement
+        use_edge_enhance: bool = False,
     ) -> None:
         super().__init__()
 
@@ -113,6 +115,7 @@ class TextMamba3D(nn.Module):
             use_checkpoint=use_checkpoint,
             deep_supervision=deep_supervision,
             use_cross_scale_skip=use_cross_scale_skip,
+            use_edge_enhance=use_edge_enhance,
             use_mamba3=use_mamba3,
             headdim=headdim,
             rope_fraction=rope_fraction,

@@ -42,3 +42,31 @@ class TestEdgeEnhance3D:
         ee = EdgeEnhance3D(channels=192, spatial_dims=(8, 8, 8))
         num_params = sum(p.numel() for p in ee.parameters())
         assert num_params < 50000
+
+
+class TestEdgeEnhanceIntegration:
+    def test_decoder_with_edge_enhance(self):
+        from models.decoder_3d import MambaDecoder3D
+
+        decoder = MambaDecoder3D(
+            img_size=(128, 128, 128),
+            patch_size=(4, 4, 4),
+            out_channels=4,
+            embed_dim=48,
+            depths=[2, 2, 2, 2],
+            use_edge_enhance=True,
+        )
+        assert decoder.edge_enhances is not None
+        assert len(decoder.edge_enhances) == 3
+
+    def test_decoder_without_edge_enhance_backward_compatible(self):
+        from models.decoder_3d import MambaDecoder3D
+
+        decoder = MambaDecoder3D(
+            img_size=(128, 128, 128),
+            patch_size=(4, 4, 4),
+            out_channels=4,
+            embed_dim=48,
+            depths=[2, 2, 2, 2],
+        )
+        assert decoder.edge_enhances is None
