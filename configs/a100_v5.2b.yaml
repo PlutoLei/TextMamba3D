@@ -48,7 +48,7 @@ augmentation:
   use_modality_dropout: true
 
 training:
-  epochs: 80
+  epochs: 190       # V5.0 resumes at epoch 110, fine-tune 80 more = 190 total
   lr: 0.00005
   weight_decay: 0.01
   warmup_epochs: 5
