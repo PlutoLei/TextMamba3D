@@ -267,6 +267,7 @@ def load_model(config, checkpoint_path, device, bf16_mode=None):
         chunk_size=model_cfg.get('chunk_size', None),
         is_mimo=model_cfg.get('is_mimo', False),
         fusion_type=model_cfg.get('fusion_type', 'seqca'),
+        use_edge_enhance=model_cfg.get('use_edge_enhance', False),
     ).to(device)
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)

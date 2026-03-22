@@ -9,31 +9,31 @@ class EdgeLoss(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.register_buffer('sobel_x', self._create_sobel_kernel(0))
-        self.register_buffer('sobel_y', self._create_sobel_kernel(1))
-        self.register_buffer('sobel_z', self._create_sobel_kernel(2))
+        self.register_buffer('sobel_kernels', self._create_sobel_kernels())
 
-    def _create_sobel_kernel(self, axis: int) -> torch.Tensor:
-        kernel = torch.zeros(1, 1, 3, 3, 3)
-        if axis == 0:
-            kernel[0, 0, 0, :, :] = torch.tensor([[-1, -2, -1], [-2, -4, -2], [-1, -2, -1]])
-            kernel[0, 0, 2, :, :] = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]])
-        elif axis == 1:
-            kernel[0, 0, :, 0, :] = torch.tensor([[-1, -2, -1], [-2, -4, -2], [-1, -2, -1]])
-            kernel[0, 0, :, 2, :] = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]])
-        else:
-            kernel[0, 0, :, :, 0] = torch.tensor([[-1, -2, -1], [-2, -4, -2], [-1, -2, -1]])
-            kernel[0, 0, :, :, 2] = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]])
-        return kernel / 16.0
+    def _create_sobel_kernels(self) -> torch.Tensor:
+        kernels = torch.zeros(3, 1, 3, 3, 3, dtype=torch.float32)
+        neg_plane = torch.tensor(
+            [[-1, -2, -1], [-2, -4, -2], [-1, -2, -1]],
+            dtype=torch.float32,
+        )
+        pos_plane = -neg_plane
+
+        kernels[0, 0, 0, :, :] = neg_plane
+        kernels[0, 0, 2, :, :] = pos_plane
+
+        kernels[1, 0, :, 0, :] = neg_plane
+        kernels[1, 0, :, 2, :] = pos_plane
+
+        kernels[2, 0, :, :, 0] = neg_plane
+        kernels[2, 0, :, :, 2] = pos_plane
+
+        return kernels / 16.0
 
     def get_edge_mask(self, target: torch.Tensor) -> torch.Tensor:
         target_float = target.float().unsqueeze(1)
-
-        # Sobel kernels may be bf16 after model.to(bf16) — force fp32 for conv
-        gx = F.conv3d(target_float, self.sobel_x.float(), padding=1)
-        gy = F.conv3d(target_float, self.sobel_y.float(), padding=1)
-        gz = F.conv3d(target_float, self.sobel_z.float(), padding=1)
-        edge = torch.sqrt(torch.clamp_min(gx**2 + gy**2 + gz**2, 0.0))
+        grads = F.conv3d(target_float, self.sobel_kernels, padding=1)
+        edge = torch.sqrt(torch.clamp_min(grads.square().sum(dim=1, keepdim=True), 0.0))
         edge = edge / torch.clamp_min(edge.amax(dim=(-3, -2, -1), keepdim=True), 1e-4)
         return edge
 

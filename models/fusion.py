@@ -279,16 +279,18 @@ class SequentialCrossAttention(nn.Module):
         # Step 1: Text=Q, Image=KV
         # Text asks: "where in the image are my descriptions relevant?"
         q1 = self.t2i_q(self.t2i_norm_q(text_proj))    # [B, M, D]
-        k1 = self.t2i_k(self.t2i_norm_kv(x))           # [B, N, D]
-        v1 = self.t2i_v(self.t2i_norm_kv(x))            # [B, N, D]
+        t2i_kv = self.t2i_norm_kv(x)
+        k1 = self.t2i_k(t2i_kv)                        # [B, N, D]
+        v1 = self.t2i_v(t2i_kv)                        # [B, N, D]
         refined = self.t2i_out(self._multi_head_attn(q1, k1, v1))
         # refined: [B, M, D] — text-length, contains image info selected by text
 
         # Step 2: Image=Q, Refined=KV
         # Image enhances itself using text-selected visual information
         q2 = self.i2t_q(self.i2t_norm_q(x))             # [B, N, D]
-        k2 = self.i2t_k(self.i2t_norm_kv(refined))      # [B, M, D]
-        v2 = self.i2t_v(self.i2t_norm_kv(refined))       # [B, M, D]
+        i2t_kv = self.i2t_norm_kv(refined)
+        k2 = self.i2t_k(i2t_kv)                         # [B, M, D]
+        v2 = self.i2t_v(i2t_kv)                         # [B, M, D]
         joint = self.i2t_out(self._multi_head_attn(q2, k2, v2, text_mask))
         # joint: [B, N, D] — image-length
 

@@ -174,6 +174,7 @@ class TextMamba3DInference:
             chunk_size=m.get('chunk_size', None),
             is_mimo=m.get('is_mimo', False),
             fusion_type=m.get('fusion_type', 'seqca'),
+            use_edge_enhance=m.get('use_edge_enhance', False),
         ).to(self.device)
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)

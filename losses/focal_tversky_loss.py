@@ -59,41 +59,31 @@ class FocalTverskyLoss(nn.Module):
         target_onehot = target_onehot.permute(0, 4, 1, 2, 3).float()
 
         start_idx = 0 if self.include_background else 1
-
-        ftl_scores = []
-        weights = []
-        for i in range(start_idx, num_classes):
-            p_i = pred_soft[:, i]
-            g_i = target_onehot[:, i]
-
-            if g_i.sum() < 1e-6:
-                ftl_scores.append(pred.new_zeros(()))
-                weights.append(pred.new_zeros(()))
-                continue
-
-            tp = (p_i * g_i).sum()
-            fp = (p_i * (1 - g_i)).sum()
-            fn = ((1 - p_i) * g_i).sum()
-
-            tversky_index = (tp + self.smooth) / (
-                tp + self.alpha * fp + self.beta * fn + self.smooth
-            )
-            focal_tversky = (1 - tversky_index) ** self.gamma
-
-            ftl_scores.append(focal_tversky)
-
-            if self.class_weights is not None and i < len(self.class_weights):
-                weights.append(
-                    self.class_weights[i].to(device=pred.device, dtype=pred.dtype)
-                )
-            else:
-                weights.append(pred.new_ones(()))
-
-        if not ftl_scores:
+        if start_idx >= num_classes:
             return pred.new_zeros(())
 
-        ftl_tensor = torch.stack(ftl_scores)
-        weight_tensor = torch.stack(weights)
+        # Vectorized per-class TP/FP/FN over [B, D, H, W].
+        tp = (pred_soft * target_onehot).sum(dim=(0, 2, 3, 4))  # [C]
+        fp = (pred_soft * (1 - target_onehot)).sum(dim=(0, 2, 3, 4))  # [C]
+        fn = ((1 - pred_soft) * target_onehot).sum(dim=(0, 2, 3, 4))  # [C]
+
+        tversky_index = (tp + self.smooth) / (
+            tp + self.alpha * fp + self.beta * fn + self.smooth
+        )
+        ftl_tensor = (1 - tversky_index).pow(self.gamma)[start_idx:]
+
+        present_mask = target_onehot.sum(dim=(0, 2, 3, 4))[start_idx:] >= 1e-6
+        ftl_tensor = torch.where(present_mask, ftl_tensor, torch.zeros_like(ftl_tensor))
+
+        weight_tensor = pred.new_ones(num_classes)
+        if self.class_weights is not None:
+            num_weighted = min(num_classes, self.class_weights.numel())
+            weight_tensor[:num_weighted] = self.class_weights[:num_weighted].to(
+                device=pred.device,
+                dtype=pred.dtype,
+            )
+        weight_tensor = weight_tensor[start_idx:]
+
         weight_sum = weight_tensor.sum()
         if weight_sum < 1e-8:
             return pred.new_zeros(())

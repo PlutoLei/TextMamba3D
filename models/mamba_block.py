@@ -2,7 +2,6 @@
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
-from einops import rearrange
 
 try:
     from mamba_ssm import Mamba
@@ -374,20 +373,45 @@ class CrossScanBiMamba3DBlock(nn.Module):
         nn.init.zeros_(self.uncertainty_head[-1].weight)
         nn.init.zeros_(self.uncertainty_head[-1].bias)
 
+        dhw_indices = torch.arange(
+            spatial_dims[0] * spatial_dims[1] * spatial_dims[2],
+            dtype=torch.long,
+        ).reshape(*spatial_dims)
+        dhw_to_hwd_idx = dhw_indices.permute(1, 2, 0).reshape(-1)
+        dhw_to_wdh_idx = dhw_indices.permute(2, 0, 1).reshape(-1)
+        self.register_buffer('dhw_to_hwd_idx', dhw_to_hwd_idx, persistent=False)
+        self.register_buffer('hwd_to_dhw_idx', torch.argsort(dhw_to_hwd_idx), persistent=False)
+        self.register_buffer('dhw_to_wdh_idx', dhw_to_wdh_idx, persistent=False)
+        self.register_buffer('wdh_to_dhw_idx', torch.argsort(dhw_to_wdh_idx), persistent=False)
+
     def _reorder(self, x: torch.Tensor, src: str, dst: str) -> torch.Tensor:
         """Reorder flattened spatial tokens between different axis orderings."""
-        D, H, W = self.spatial_dims
-        return rearrange(x, f'b ({src}) c -> b ({dst}) c', d=D, h=H, w=W)
+        if src == dst:
+            return x
+
+        if src == 'd h w' and dst == 'h w d':
+            index = self.dhw_to_hwd_idx
+        elif src == 'h w d' and dst == 'd h w':
+            index = self.hwd_to_dhw_idx
+        elif src == 'd h w' and dst == 'w d h':
+            index = self.dhw_to_wdh_idx
+        elif src == 'w d h' and dst == 'd h w':
+            index = self.wdh_to_dhw_idx
+        else:
+            raise ValueError(f'Unsupported reorder: {src} -> {dst}')
+
+        return torch.index_select(x, dim=1, index=index)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """[B, D*H*W, C] -> [B, D*H*W, C]"""
         residual = x
         x = self.norm(x)
         D, H, W = self.spatial_dims
+        B, L, C = x.shape
 
         # DWConv: local 3x3x3 spatial features
-        x_3d = rearrange(x, 'b (d h w) c -> b c d h w', d=D, h=H, w=W)
-        x = x + rearrange(self.dwconv(x_3d), 'b c d h w -> b (d h w) c')
+        x_3d = x.reshape(B, D, H, W, C).permute(0, 4, 1, 2, 3)
+        x = x + self.dwconv(x_3d).permute(0, 2, 3, 4, 1).reshape(B, L, C)
 
         # Scan 1: D-H-W ordering (native)
         out_dhw_f = self.dhw_fwd(x)

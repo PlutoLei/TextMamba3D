@@ -173,10 +173,11 @@ class MambaDecoder3D(nn.Module):
                 if skip_idx >= 0:
                     # Original matched-level skip (always)
                     skip = self.skip_projs[i](features[skip_idx])
-                    x = x + skip
 
                     if self.edge_enhances is not None:
-                        x = self.edge_enhances[i](x)
+                        skip = self.edge_enhances[i](skip)
+
+                    x = x + skip
 
                     # V4.6: cross-scale supplemental attention
                     if self.use_cross_scale_skip and self.cross_scale_attns is not None:

@@ -20,6 +20,7 @@ from data import BraTSDataset, get_train_transforms, get_val_transforms
 from data.brats_textbrats_dataset import TextBraTSDataset
 from losses import CombinedLoss
 from models import TextMamba3D
+from models.mamba_block import MAMBA3_IS_REAL
 from models.text_encoder import TextMambaEncoder
 from utils.metrics import dice_score_brats_regions
 
@@ -373,6 +374,10 @@ def main():
 
     # Model
     use_checkpoint = config['training'].get('gradient_checkpointing', False)
+    use_mamba3 = config['model'].get('use_mamba3', False)
+    if use_checkpoint and use_mamba3:
+        print('WARNING: gradient_checkpointing incompatible with Mamba2/3, auto-disabling')
+        use_checkpoint = False
     if use_checkpoint:
         print('Gradient checkpointing: ENABLED (saves ~30-50% GPU memory)')
 
@@ -380,7 +385,6 @@ def main():
     if deep_supervision:
         print('Deep supervision: ENABLED (aux heads at intermediate decoder stages)')
 
-    use_mamba3 = config['model'].get('use_mamba3', False)
     rope_fraction = config['model'].get('rope_fraction', None)
     chunk_size = config['model'].get('chunk_size', None)
     is_mimo = config['model'].get('is_mimo', False)
@@ -416,7 +420,8 @@ def main():
         print('Pure bf16 mode: model bf16, BERT fp32')
 
     if use_mamba3:
-        print(f'SSM Backend: Mamba-3 (d_state={config["model"].get("d_state", 16)}, '
+        backend = 'Mamba-3' if MAMBA3_IS_REAL else 'Mamba-2 (via use_mamba3 flag)'
+        print(f'SSM Backend: {backend} (d_state={config["model"].get("d_state", 16)}, '
               f'headdim={config["model"].get("headdim", "auto")})')
     else:
         print('SSM Backend: Mamba-1 (default)')
