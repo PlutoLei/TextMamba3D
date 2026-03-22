@@ -70,9 +70,6 @@ class MambaDecoder3D(nn.Module):
         self.cross_scale_attns = nn.ModuleList() if use_cross_scale_skip else None
 
         # V5.2: edge enhancement modules (one per skip connection)
-        if use_edge_enhance:
-            from .edge_enhance import EdgeEnhance3D
-            self._edge_enhance_cls = EdgeEnhance3D
         self.edge_enhances = nn.ModuleList() if use_edge_enhance else None
 
         skip_count = 0
@@ -110,10 +107,11 @@ class MambaDecoder3D(nn.Module):
 
                 # V5.2: edge enhancement on skip features
                 if use_edge_enhance:
+                    from .edge_enhance import EdgeEnhance3D
                     skip_dim = dim // 2
                     skip_spatial = (d // (2 ** (i - 1)), h // (2 ** (i - 1)), w // (2 ** (i - 1)))
                     self.edge_enhances.append(
-                        self._edge_enhance_cls(channels=skip_dim, spatial_dims=skip_spatial)
+                        EdgeEnhance3D(channels=skip_dim, spatial_dims=skip_spatial)
                     )
 
                 # V4.6: cross-scale attention (supplemental)
@@ -177,8 +175,7 @@ class MambaDecoder3D(nn.Module):
                     skip = self.skip_projs[i](features[skip_idx])
                     x = x + skip
 
-                    # V5.2: Edge Enhancement on skip features
-                    if self.use_edge_enhance and self.edge_enhances is not None:
+                    if self.edge_enhances is not None:
                         x = self.edge_enhances[i](x)
 
                     # V4.6: cross-scale supplemental attention

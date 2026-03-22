@@ -66,7 +66,7 @@ class FocalTverskyLoss(nn.Module):
             p_i = pred_soft[:, i]
             g_i = target_onehot[:, i]
 
-            if g_i.sum().item() < 1e-6:
+            if g_i.sum() < 1e-6:
                 ftl_scores.append(pred.new_zeros(()))
                 weights.append(pred.new_zeros(()))
                 continue
@@ -95,7 +95,7 @@ class FocalTverskyLoss(nn.Module):
         ftl_tensor = torch.stack(ftl_scores)
         weight_tensor = torch.stack(weights)
         weight_sum = weight_tensor.sum()
-        if weight_sum.item() < 1e-8:
+        if weight_sum < 1e-8:
             return pred.new_zeros(())
         weight_tensor = weight_tensor / weight_sum
 
