@@ -26,7 +26,7 @@ model:
   use_pretrained_text: true
   unfreeze_text_layers: 2
   text_model_path: null
-  use_mamba3: false
+  use_mamba3: true   # Must match V5.0 (Mamba2) for checkpoint compatibility
   fusion_type: seqca
   use_edge_enhance: true
 
@@ -54,7 +54,7 @@ training:
   contrastive_warmup_epochs: 0
   patience: 20
   gradient_accumulation: 2
-  gradient_checkpointing: true
+  gradient_checkpointing: false  # Mamba2 incompatible with torch checkpoint
   deep_supervision: true
   ds_weights: [0.2, 0.1, 0.05]
   use_amp: true
