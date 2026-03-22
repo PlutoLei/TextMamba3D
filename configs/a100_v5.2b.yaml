@@ -1,0 +1,72 @@
+# configs/textbrats_a100_v5.2b.yaml
+# A100 40GB — V5.2 Exp 2: Focal Tversky Loss only (no Edge Enhancement)
+# Fine-tune from best_v5.0.pth (Mamba-2 baseline)
+
+data:
+  data_dir: "./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
+  dataset_type: "textbrats"
+  patch_size: [128, 128, 128]
+  batch_size: 2
+  num_workers: 4
+  train_ratio: 0.596
+  val_ratio: 0.149
+  et_enriched: true
+  enriched_prob: 0.5
+
+model:
+  img_size: [128, 128, 128]
+  in_channels: 4
+  out_channels: 4
+  embed_dim: 48
+  depths: [2, 2, 2, 2]
+  d_state: 16
+  dropout: 0.1
+  text_embed_dim: 256
+  text_max_len: 192
+  use_pretrained_text: true
+  unfreeze_text_layers: 2
+  text_model_path: null
+  use_mamba3: false
+  fusion_type: seqca
+  use_edge_enhance: false
+
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  edge_weight: 1.0
+  contrastive_weight: 0.05
+  temperature: 0.07
+  class_weights: [0.25, 3.0, 1.0, 4.0]
+  use_ftl: true
+  ftl_alpha: 0.3
+  ftl_beta: 0.7
+  ftl_gamma: 1.33
+
+augmentation:
+  use_elastic: true
+  use_modality_dropout: true
+
+training:
+  epochs: 80
+  lr: 0.00005
+  weight_decay: 0.01
+  warmup_epochs: 5
+  contrastive_warmup_epochs: 0
+  patience: 20
+  gradient_accumulation: 2
+  gradient_checkpointing: true
+  deep_supervision: true
+  ds_weights: [0.2, 0.1, 0.05]
+  use_amp: true
+  no_text_ratio: 0.15
+  gradient_clip_norm: 1.0
+
+eval:
+  metrics: ["dice", "hd95"]
+  sliding_window: true
+  sw_overlap: 0.5
+  sw_batch_size: 2
+
+experiment:
+  name: "TextMamba3D_A100_v5.2b_ftl_only"
+  description: "V5.2 Exp 2: Focal Tversky Loss (alpha=0.3, beta=0.7, gamma=1.33), fine-tune from V5.0"
