@@ -38,6 +38,13 @@ def parse_args() -> argparse.Namespace:
                         help='Limit training samples (e.g., 200 for quick training)')
     parser.add_argument('--max-epochs', type=int, default=None,
                         help='Override max epochs (e.g., 1 for smoke test)')
+    parser.add_argument('--reset-lr', action='store_true',
+                        help='Reset LR schedule for fine-tuning (cosine from epoch 0)')
+    parser.add_argument('--reset-optimizer', action='store_true',
+                        help='Skip loading optimizer state (fresh Adam for new loss)')
+    parser.add_argument('--es-metric', type=str, default='mean',
+                        choices=['mean', 'et', 'weighted'],
+                        help='Early stopping metric: mean Dice, ET Dice, or weighted (0.5*ET+0.25*TC+0.25*WT)')
     return parser.parse_args()
 
 
@@ -196,11 +203,16 @@ def train_epoch(
 @torch.no_grad()
 def validate(
     model, loader, criterion, device, use_amp=True, use_text=True, bf16_mode=None
-) -> tuple[float, float]:
-    """Validate model with or without text guidance."""
+) -> tuple[float, float, dict]:
+    """Validate model with or without text guidance.
+
+    Returns:
+        (mean_loss, mean_dice, region_means) where region_means has keys ET, TC, WT.
+    """
     model.eval()
     total_loss = 0.0
     all_dice = []
+    all_regions: dict[str, list[float]] = {'ET': [], 'TC': [], 'WT': []}
 
     desc = 'Validating' if use_text else 'Validating (no-text)'
     for batch in tqdm(loader, desc=desc):
@@ -223,9 +235,13 @@ def validate(
             loss = criterion(pred, mask)['total']
 
         total_loss += loss.item()
-        all_dice.append(dice_score_brats_regions(pred, mask)['dice_mean'])
+        scores = dice_score_brats_regions(pred, mask)
+        all_dice.append(scores['dice_mean'])
+        for region in ('ET', 'TC', 'WT'):
+            all_regions[region].append(scores[f'dice_{region}'])
 
-    return total_loss / len(loader), np.mean(all_dice)
+    region_means = {r: np.mean(v) for r, v in all_regions.items()}
+    return total_loss / len(loader), np.mean(all_dice), region_means
 
 
 @torch.no_grad()
@@ -495,7 +511,10 @@ def main():
             print(f'Unexpected keys (ignored): {len(result.unexpected_keys)}')
             for k in result.unexpected_keys[:10]:
                 print(f'  {k}')
-        optimizer.load_state_dict(checkpoint['optimizer'])
+        if args.reset_optimizer:
+            print('Optimizer state reset (--reset-optimizer): fresh Adam for fine-tuning')
+        else:
+            optimizer.load_state_dict(checkpoint['optimizer'])
         if scaler is not None and checkpoint.get('scaler') is not None:
             scaler.load_state_dict(checkpoint['scaler'])
         start_epoch = checkpoint['epoch'] + 1
@@ -515,7 +534,12 @@ def main():
             criterion.contrastive_weight = base_contrastive_weight
         need_features = criterion.contrastive_weight > 0
 
-        current_lr = get_lr(epoch, warmup_epochs, base_lr, total_epochs)
+        if args.reset_lr and start_epoch > 0:
+            local_epoch = epoch - start_epoch
+            finetune_epochs = total_epochs - start_epoch
+            current_lr = get_lr(local_epoch, warmup_epochs, base_lr, finetune_epochs)
+        else:
+            current_lr = get_lr(epoch, warmup_epochs, base_lr, total_epochs)
         for param_group in optimizer.param_groups:
             param_group['lr'] = current_lr
 
@@ -528,13 +552,13 @@ def main():
         )
 
         # Validate with text (standard mode)
-        val_loss, val_dice = validate(
+        val_loss, val_dice, region_text = validate(
             model, val_loader, criterion, device, use_amp=use_amp,
             use_text=True, bf16_mode=bf16_mode
         )
 
         # Validate without text (fair evaluation mode)
-        val_loss_no_text, val_dice_no_text = validate(
+        val_loss_no_text, val_dice_no_text, region_notext = validate(
             model, val_loader, criterion, device, use_amp=use_amp,
             use_text=False, bf16_mode=bf16_mode
         )
@@ -548,12 +572,17 @@ def main():
         writer.add_scalar('LR', current_lr, epoch)
         writer.add_scalar('GradNorm/max', max_grad_norm, epoch)
         writer.add_scalar('Loss/contrastive_weight', criterion.contrastive_weight, epoch)
+        for region in ('ET', 'TC', 'WT'):
+            writer.add_scalar(f'Dice/val_{region}', region_text[region], epoch)
+            writer.add_scalar(f'Dice/val_{region}_notext', region_notext[region], epoch)
         # Log TextScaleGate values (V4.6)
         log_gate_values(model, writer, epoch)
 
         print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
         print(f'  With text:    val_loss={val_loss:.4f}, val_dice={val_dice:.4f}')
+        print(f'    Per-region: ET={region_text["ET"]:.4f}, TC={region_text["TC"]:.4f}, WT={region_text["WT"]:.4f}')
         print(f'  Without text: val_loss={val_loss_no_text:.4f}, val_dice={val_dice_no_text:.4f}')
+        print(f'    Per-region: ET={region_notext["ET"]:.4f}, TC={region_notext["TC"]:.4f}, WT={region_notext["WT"]:.4f}')
         print(f'  Contrastive weight: {criterion.contrastive_weight:.4f}')
 
         os.makedirs('checkpoints', exist_ok=True)
@@ -594,8 +623,17 @@ def main():
             except OSError as e:
                 print(f'  [WARN] Drive sync failed: {e}')
 
-        # Early stopping (based on best of both modes)
-        if early_stopping(max(val_dice, val_dice_no_text)):
+        # Early stopping
+        if args.es_metric == 'et':
+            es_value = max(region_text['ET'], region_notext['ET'])
+        elif args.es_metric == 'weighted':
+            es_value = max(
+                0.5 * region_text['ET'] + 0.25 * region_text['TC'] + 0.25 * region_text['WT'],
+                0.5 * region_notext['ET'] + 0.25 * region_notext['TC'] + 0.25 * region_notext['WT'],
+            )
+        else:
+            es_value = max(val_dice, val_dice_no_text)
+        if early_stopping(es_value):
             print(f'\nEarly stopping triggered at epoch {epoch}')
             break
 

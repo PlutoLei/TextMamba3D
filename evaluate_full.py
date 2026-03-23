@@ -34,6 +34,10 @@ def parse_args():
     parser.add_argument('--et-min-size', type=int, default=50,
                         help='Min voxel count for ET connected components (default: 50)')
     parser.add_argument('--save-preds', type=str, default=None, help='Directory to save predictions')
+    parser.add_argument('--et-boost', type=float, default=1.0,
+                        help='Multiply ET softmax channel before argmax (default: 1.0 = no boost)')
+    parser.add_argument('--et-dilate', type=int, default=0,
+                        help='Dilate ET mask within TC region by N voxels (default: 0)')
     return parser.parse_args()
 
 
@@ -238,6 +242,35 @@ def postprocess_et(pred_argmax: np.ndarray, et_class: int = 3, min_size: int = 5
     return pred
 
 
+def _get_dilation_struct():
+    from scipy.ndimage import generate_binary_structure
+    return generate_binary_structure(3, 1)  # 6-connectivity, computed once
+
+
+_DILATION_STRUCT_3D = _get_dilation_struct()
+
+
+def dilate_et_within_tc(
+    pred_argmax: np.ndarray, et_class: int = 3, necrotic_class: int = 1, iterations: int = 1,
+) -> np.ndarray:
+    """Dilate ET mask within TC region (class 1+3) to recover boundary voxels.
+
+    Only expands ET into necrotic (class 1) regions — cannot leak into edema or background.
+    TC and WT metrics are unaffected since class 1→3 stays within both region definitions.
+    """
+    from scipy.ndimage import binary_dilation
+
+    pred = pred_argmax.copy()
+    et_mask = pred == et_class
+    if et_mask.sum() == 0:
+        return pred
+    tc_mask = (pred == et_class) | (pred == necrotic_class)
+    dilated = binary_dilation(et_mask, structure=_DILATION_STRUCT_3D, iterations=iterations)
+    new_et = dilated & tc_mask & ~et_mask
+    pred[new_et] = et_class
+    return pred
+
+
 def load_model(config, checkpoint_path, device, bf16_mode=None):
     """Load model from checkpoint."""
     model_cfg = config['model']
@@ -336,6 +369,10 @@ def main():
         print("TTA: 8-fold flip ensemble ENABLED")
     if use_postprocess:
         print(f"Post-processing: ET connected-component filter (min_size={et_min_size})")
+    if args.et_boost != 1.0:
+        print(f"ET boost: {args.et_boost}x (softmax channel multiplier)")
+    if args.et_dilate > 0:
+        print(f"ET dilation: {args.et_dilate} voxel(s) within TC mask")
     print()
 
     use_amp = config['training'].get('use_amp', True) and device.type == 'cuda'
@@ -362,6 +399,11 @@ def main():
                 bf16_mode=bf16_mode,
             )
 
+            # ET probability boost before argmax (shifts decision boundary toward ET)
+            if args.et_boost != 1.0:
+                probs[:, 3] *= args.et_boost
+                probs = probs / probs.sum(dim=1, keepdim=True)
+
             # Convert to prediction
             pred_argmax = probs.argmax(dim=1).cpu()  # [1, D, H, W]
             pred_np = pred_argmax.squeeze().numpy()
@@ -369,6 +411,10 @@ def main():
             # Post-processing: remove small ET components
             if use_postprocess:
                 pred_np = postprocess_et(pred_np, et_class=3, min_size=et_min_size)
+
+            # Post-processing: dilate ET within TC mask
+            if args.et_dilate > 0:
+                pred_np = dilate_et_within_tc(pred_np, iterations=args.et_dilate)
                 # Rebuild tensor for dice_score_brats_regions (needs softmax-like input)
                 # Use one-hot from cleaned argmax as "probabilities"
                 pred_onehot = torch.zeros(1, 4, *pred_np.shape)

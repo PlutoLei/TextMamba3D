@@ -53,7 +53,7 @@ training:
   weight_decay: 0.01
   warmup_epochs: 5
   contrastive_warmup_epochs: 0
-  patience: 20
+  patience: 25
   gradient_accumulation: 2
   gradient_checkpointing: false  # Mamba2 incompatible with torch checkpoint
   deep_supervision: true
