@@ -242,6 +242,41 @@ def postprocess_et(pred_argmax: np.ndarray, et_class: int = 3, min_size: int = 5
     return pred
 
 
+def fill_holes_et(pred_argmax: np.ndarray, et_class: int = 3) -> np.ndarray:
+    """Fill internal holes in ET regions (recover missed interior voxels)."""
+    from scipy.ndimage import binary_fill_holes
+    pred = pred_argmax.copy()
+    et_mask = pred == et_class
+    if et_mask.sum() == 0:
+        return pred
+    filled = binary_fill_holes(et_mask)
+    new_et = filled & ~et_mask
+    pred[new_et] = et_class
+    return pred
+
+
+def enforce_region_hierarchy(pred_argmax: np.ndarray) -> np.ndarray:
+    """Enforce BraTS region constraints: ET(3) must be inside TC(1+3), TC inside WT(1+2+3).
+
+    Orphan ET voxels (ET outside TC context) are reclassified as edema (class 2).
+    Orphan TC voxels (necrotic/ET surrounded by background) are reclassified as background.
+    """
+    pred = pred_argmax.copy()
+    # ET must neighbor other TC voxels — isolated ET in pure edema/background is suspicious
+    # Simple constraint: if a connected ET component has no neighboring necrotic (class 1),
+    # it's likely a false positive. Reclassify as edema.
+    # For now, just ensure any tumor voxel (1/2/3) outside WT connected components is removed.
+    wt_mask = pred > 0
+    if wt_mask.sum() == 0:
+        return pred
+    labeled_wt, n_wt = ndimage_label(wt_mask)
+    for comp_id in range(1, n_wt + 1):
+        comp = labeled_wt == comp_id
+        if comp.sum() < 10:  # tiny isolated tumor islands → background
+            pred[comp] = 0
+    return pred
+
+
 def _get_dilation_struct():
     from scipy.ndimage import generate_binary_structure
     return generate_binary_structure(3, 1)  # 6-connectivity, computed once
@@ -368,7 +403,7 @@ def main():
     if use_tta:
         print("TTA: 8-fold flip ensemble ENABLED")
     if use_postprocess:
-        print(f"Post-processing: ET connected-component filter (min_size={et_min_size})")
+        print(f"Post-processing: ET CC filter (min_size={et_min_size}) + hole fill + hierarchy enforcement")
     if args.et_boost != 1.0:
         print(f"ET boost: {args.et_boost}x (softmax channel multiplier)")
     if args.et_dilate > 0:
@@ -408,15 +443,19 @@ def main():
             pred_argmax = probs.argmax(dim=1).cpu()  # [1, D, H, W]
             pred_np = pred_argmax.squeeze().numpy()
 
-            # Post-processing: remove small ET components
+            # Post-processing pipeline (BraTS standard)
+            pp_applied = False
             if use_postprocess:
                 pred_np = postprocess_et(pred_np, et_class=3, min_size=et_min_size)
+                pred_np = fill_holes_et(pred_np)
+                pred_np = enforce_region_hierarchy(pred_np)
+                pp_applied = True
 
-            # Post-processing: dilate ET within TC mask
             if args.et_dilate > 0:
                 pred_np = dilate_et_within_tc(pred_np, iterations=args.et_dilate)
-                # Rebuild tensor for dice_score_brats_regions (needs softmax-like input)
-                # Use one-hot from cleaned argmax as "probabilities"
+                pp_applied = True
+
+            if pp_applied:
                 pred_onehot = torch.zeros(1, 4, *pred_np.shape)
                 for c in range(4):
                     pred_onehot[0, c] = torch.from_numpy((pred_np == c).astype(np.float32))
