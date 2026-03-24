@@ -1,4 +1,7 @@
 # data/transforms.py
+import os
+
+import nibabel as nib
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -305,6 +308,166 @@ class RandModalityDropout:
         return image, mask
 
 
+class TumorCopyPaste3D:
+    """Copy-paste tumor regions from a donor bank to augment training samples.
+
+    Inspired by BraTS 2023 winner "Faking it!" strategy. Copies tumor regions
+    (especially ET) from one scan and pastes them into healthy or low-ET regions
+    of another, with intensity blending at boundaries.
+
+    The donor bank is populated lazily from the dataset during training.
+    This augmentation specifically targets ET class imbalance by increasing
+    the frequency and diversity of ET appearances.
+
+    Args:
+        prob: probability of applying copy-paste per sample.
+        bank_size: max number of donor tumors to store.
+        blend_sigma: Gaussian sigma for boundary blending (voxels).
+        min_et_voxels: minimum ET voxels in donor to store.
+        paste_jitter: random position jitter when pasting (voxels).
+    """
+
+    def __init__(
+        self,
+        prob: float = 0.3,
+        bank_size: int = 50,
+        blend_sigma: float = 2.0,
+        min_et_voxels: int = 100,
+        paste_jitter: int = 16,
+    ):
+        self.prob = prob
+        self.bank_size = bank_size
+        self.blend_sigma = blend_sigma
+        self.min_et_voxels = min_et_voxels
+        self.paste_jitter = paste_jitter
+        self.donor_bank = []  # List of (image_crop, mask_crop, bbox) tuples
+        if blend_sigma > 0:
+            from scipy.ndimage import gaussian_filter
+            self._gaussian_filter = gaussian_filter
+
+    def _extract_tumor_crop(self, image: torch.Tensor, mask: torch.Tensor):
+        """Extract tumor bounding box crop from a sample."""
+        tumor_mask = mask > 0
+        if tumor_mask.sum() == 0:
+            return None
+
+        coords = torch.nonzero(tumor_mask)  # [N, 3]
+        mins = coords.min(dim=0).values
+        maxs = coords.max(dim=0).values + 1
+
+        # Check for sufficient ET
+        et_count = (mask == 3).sum().item()
+        if et_count < self.min_et_voxels:
+            return None
+
+        # Add small margin
+        margin = 4
+        d0, h0, w0 = max(0, mins[0] - margin), max(0, mins[1] - margin), max(0, mins[2] - margin)
+        d1 = min(mask.shape[0], maxs[0] + margin)
+        h1 = min(mask.shape[1], maxs[1] + margin)
+        w1 = min(mask.shape[2], maxs[2] + margin)
+
+        img_crop = image[:, d0:d1, h0:h1, w0:w1].clone()
+        mask_crop = mask[d0:d1, h0:h1, w0:w1].clone()
+
+        return (img_crop, mask_crop, (d1 - d0, h1 - h0, w1 - w0))
+
+    def _add_to_bank(self, image: torch.Tensor, mask: torch.Tensor):
+        """Try to add current sample's tumor to the donor bank."""
+        crop = self._extract_tumor_crop(image, mask)
+        if crop is not None:
+            if len(self.donor_bank) >= self.bank_size:
+                # Replace random entry
+                idx = np.random.randint(0, self.bank_size)
+                self.donor_bank[idx] = crop
+            else:
+                self.donor_bank.append(crop)
+
+    def __call__(
+        self, image: torch.Tensor, mask: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Always try to populate bank
+        self._add_to_bank(image, mask)
+
+        if np.random.random() > self.prob or len(self.donor_bank) < 3:
+            return image, mask
+
+        # Select random donor
+        donor_img, donor_mask, donor_size = self.donor_bank[
+            np.random.randint(0, len(self.donor_bank))
+        ]
+
+        _, D, H, W = image.shape
+        dd, dh, dw = donor_size
+
+        # Skip if donor is too large for the patch
+        if dd > D or dh > H or dw > W:
+            return image, mask
+
+        # Random paste position with jitter
+        d0 = np.random.randint(0, max(1, D - dd + 1))
+        h0 = np.random.randint(0, max(1, H - dh + 1))
+        w0 = np.random.randint(0, max(1, W - dw + 1))
+
+        # Create blending mask (smooth boundary via distance transform)
+        tumor_region = donor_mask > 0
+        blend_mask = tumor_region.float()
+
+        # Apply Gaussian smoothing for soft boundary
+        if self.blend_sigma > 0:
+            blend_np = self._gaussian_filter(blend_mask.numpy(), sigma=self.blend_sigma)
+            blend_mask = torch.from_numpy(blend_np)
+
+        # Blend: target = (1 - alpha) * target + alpha * donor
+        image = image.clone()
+        mask = mask.clone()
+
+        target_region = image[:, d0:d0+dd, h0:h0+dh, w0:w0+dw]
+        alpha = blend_mask.unsqueeze(0)  # [1, dd, dh, dw]
+        image[:, d0:d0+dd, h0:h0+dh, w0:w0+dw] = (
+            (1 - alpha) * target_region + alpha * donor_img
+        )
+
+        # Paste mask (hard assignment where tumor exists)
+        paste_zone = mask[d0:d0+dd, h0:h0+dh, w0:w0+dw]
+        has_donor_tumor = donor_mask > 0
+        paste_zone[has_donor_tumor] = donor_mask[has_donor_tumor]
+        mask[d0:d0+dd, h0:h0+dh, w0:w0+dw] = paste_zone
+
+        return image, mask
+
+
+class ETOversampler:
+    """Wrapper that oversamples training indices with high ET content.
+
+    Not a transform — used to modify the dataset's __getitem__ sampling.
+    Provides a weighted index list where ET-rich cases appear more often.
+    """
+
+    @staticmethod
+    def compute_et_weights(dataset, et_label: int = 3, boost_factor: float = 3.0):
+        """Compute sampling weights based on ET voxel count per case.
+
+        Returns list of weights (one per case) for WeightedRandomSampler.
+        """
+        weights = []
+        for case_dir in dataset.cases:
+            case_name = os.path.basename(case_dir)
+            seg_path = os.path.join(case_dir, f'{case_name}_seg.nii')
+            if not os.path.exists(seg_path):
+                seg_path += '.gz'
+            try:
+                seg = nib.load(seg_path).get_fdata()
+                seg[seg == 4] = 3  # BraTS label mapping
+                et_ratio = (seg == et_label).sum() / max(1, (seg > 0).sum())
+                # Higher weight for ET-rich cases
+                w = 1.0 + boost_factor * et_ratio
+            except Exception:
+                w = 1.0
+            weights.append(w)
+        return weights
+
+
 class Compose:
     """Compose transforms."""
 
@@ -325,6 +488,8 @@ def get_train_transforms(
     patch_size: Tuple[int, int, int],
     use_elastic: bool = False,
     use_modality_dropout: bool = False,
+    use_copy_paste: bool = False,
+    copy_paste_prob: float = 0.3,
 ):
     transforms = [
         TumorAwareCrop3D(patch_size),
@@ -339,6 +504,8 @@ def get_train_transforms(
     ])
     if use_modality_dropout:
         transforms.append(RandModalityDropout(prob=0.15, max_drop=1))
+    if use_copy_paste:
+        transforms.append(TumorCopyPaste3D(prob=copy_paste_prob))
     return Compose(transforms)
 
 

@@ -100,9 +100,10 @@ def extract_enhancement_features(t1ce_path: str) -> Dict:
     centroid = coords.mean(axis=0)
     norm_centroid = centroid / np.array(vol.shape)
 
-    side = "left" if norm_centroid[0] > 0.5 else "right"
+    # BraTS [D, H, W]: axis 0=depth(SI), axis 1=height(AP), axis 2=width(LR)
+    side = "left" if norm_centroid[2] > 0.5 else "right"
     ap = "anterior" if norm_centroid[1] > 0.5 else "posterior"
-    si = "superior" if norm_centroid[2] > 0.5 else "inferior"
+    si = "superior" if norm_centroid[0] > 0.5 else "inferior"
 
     return {
         "has_enhancement": True,

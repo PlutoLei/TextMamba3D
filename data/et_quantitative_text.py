@@ -54,8 +54,8 @@ def compute_et_stats(mask: np.ndarray) -> dict:
     side = ""
     position = ""
     if et_voxels > 0:
-        coords = np.argwhere(et_mask)
-        centroid = coords.mean(axis=0)
+        from scipy.ndimage import center_of_mass
+        centroid = np.array(center_of_mass(et_mask))
         norm = centroid / np.array(mask.shape)
         # BraTS [D, H, W]: axis 0=depth(SI), axis 1=height(AP), axis 2=width(LR)
         side = "left" if norm[2] > 0.5 else "right"

@@ -44,6 +44,7 @@ class TextBraTSDataset(Dataset):
         et_enriched: bool = False,  # 是否启用 ET-enriched 文本
         enriched_prob: float = 0.5,  # 训练时使用 enriched 文本的概率
         et_quantitative: bool = False,  # Append quantitative ET stats to text
+        paraphrase_prob: float = 0.3,  # Probability of using paraphrase text (training only)
     ):
         self.data_dir = data_dir
         self.split = split
@@ -54,10 +55,21 @@ class TextBraTSDataset(Dataset):
         self.et_enriched = et_enriched
         self.enriched_prob = enriched_prob
         self.et_quantitative = et_quantitative
+        self.paraphrase_prob = paraphrase_prob
 
         # Find all cases and split
         all_cases = self._find_cases()
         self.cases = self._split_cases(all_cases, split, train_ratio, val_ratio, seed)
+
+        # Cache paraphrase file lists (avoid glob on every __getitem__)
+        self._paraphrase_cache = {}
+        if self.split == 'train':
+            import glob
+            for case_dir in self.cases:
+                case_name = os.path.basename(case_dir)
+                files = glob.glob(os.path.join(case_dir, f"{case_name}_paraphrase_*.txt"))
+                if files:
+                    self._paraphrase_cache[case_name] = files
 
         print(f"TextBraTS {split}: {len(self.cases)} samples")
 
@@ -150,11 +162,9 @@ class TextBraTSDataset(Dataset):
                 return f.read().strip()
         return None
 
-    def _load_random_paraphrase(self, case_dir: str, case_name: str):
-        """Load a random paraphrase if available."""
-        import glob
-        pattern = os.path.join(case_dir, f"{case_name}_paraphrase_*.txt")
-        files = glob.glob(pattern)
+    def _load_random_paraphrase(self, case_name: str):
+        """Load a random paraphrase from cache."""
+        files = self._paraphrase_cache.get(case_name)
         if not files:
             return None
         chosen = files[np.random.randint(0, len(files))]
@@ -225,9 +235,9 @@ class TextBraTSDataset(Dataset):
         # Load expert text (NO information leakage!)
         original_text = self._load_text(case_dir, case_name)
 
-        # Text paraphrase augmentation (training only, 30% chance)
-        if self.split == 'train' and np.random.random() < 0.3:
-            para = self._load_random_paraphrase(case_dir, case_name)
+        # Text paraphrase augmentation (training only)
+        if self.split == 'train' and np.random.random() < self.paraphrase_prob:
+            para = self._load_random_paraphrase(case_name)
             if para:
                 original_text = para
 

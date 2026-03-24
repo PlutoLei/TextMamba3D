@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
-from scipy.ndimage import label as ndimage_label
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
@@ -17,6 +16,13 @@ from data.brats_textbrats_dataset import TextBraTSDataset
 from models import TextMamba3D
 from models.text_encoder import TextMambaEncoder
 from utils.metrics import dice_score_brats_regions, hausdorff_distance_95_brats_regions
+from utils.postprocess import (
+    dilate_et_within_tc,
+    enforce_region_hierarchy,
+    fill_holes_et,
+    postprocess_brats_advanced,
+    postprocess_et,
+)
 from utils.sliding_window import gaussian_weight_3d
 
 
@@ -38,6 +44,18 @@ def parse_args():
                         help='Multiply ET softmax channel before argmax (default: 1.0 = no boost)')
     parser.add_argument('--et-dilate', type=int, default=0,
                         help='Dilate ET mask within TC region by N voxels (default: 0)')
+    parser.add_argument('--advanced-pp', action='store_true',
+                        help='Enable BraTS championship-level post-processing (overrides --postprocess)')
+    parser.add_argument('--wt-min-size', type=int, default=500,
+                        help='Min voxel count for WT connected components (default: 500)')
+    parser.add_argument('--tc-min-size', type=int, default=200,
+                        help='Min voxel count for TC connected components (default: 200)')
+    parser.add_argument('--wt-conf-thresh', type=float, default=0.0,
+                        help='Mean WT confidence threshold (0=disabled)')
+    parser.add_argument('--et-conf-thresh', type=float, default=0.0,
+                        help='Mean ET confidence threshold (0=disabled)')
+    parser.add_argument('--et-wt-ratio', type=float, default=0.0,
+                        help='ET/WT volume ratio threshold; below this, relabel ET as NCR (0=disabled, winners use 0.03-0.04)')
     return parser.parse_args()
 
 
@@ -215,97 +233,6 @@ def sliding_window_inference_tta(
     return prob_sum / len(flip_combos)
 
 
-def postprocess_et(pred_argmax: np.ndarray, et_class: int = 3, min_size: int = 50) -> np.ndarray:
-    """Remove small ET connected components (false positives).
-
-    Args:
-        pred_argmax: [D, H, W] integer label map.
-        et_class: label value for enhancing tumor.
-        min_size: minimum voxel count to keep an ET component.
-
-    Returns:
-        Cleaned label map with small ET components reclassified as necrotic (class 1).
-    """
-    pred = pred_argmax.copy()
-    et_mask = (pred == et_class)
-    if et_mask.sum() == 0:
-        return pred
-
-    labeled, n_components = ndimage_label(et_mask)
-
-    for comp_id in range(1, n_components + 1):
-        comp_mask = (labeled == comp_id)
-        if comp_mask.sum() < min_size:
-            # Reclassify small ET as necrotic core (class 1) — stays in TC but not ET
-            pred[comp_mask] = 1
-
-    return pred
-
-
-def fill_holes_et(pred_argmax: np.ndarray, et_class: int = 3) -> np.ndarray:
-    """Fill internal holes in ET regions (recover missed interior voxels)."""
-    from scipy.ndimage import binary_fill_holes
-    pred = pred_argmax.copy()
-    et_mask = pred == et_class
-    if et_mask.sum() == 0:
-        return pred
-    filled = binary_fill_holes(et_mask)
-    new_et = filled & ~et_mask
-    pred[new_et] = et_class
-    return pred
-
-
-def enforce_region_hierarchy(pred_argmax: np.ndarray) -> np.ndarray:
-    """Enforce BraTS region constraints: ET(3) must be inside TC(1+3), TC inside WT(1+2+3).
-
-    Orphan ET voxels (ET outside TC context) are reclassified as edema (class 2).
-    Orphan TC voxels (necrotic/ET surrounded by background) are reclassified as background.
-    """
-    pred = pred_argmax.copy()
-    # ET must neighbor other TC voxels — isolated ET in pure edema/background is suspicious
-    # Simple constraint: if a connected ET component has no neighboring necrotic (class 1),
-    # it's likely a false positive. Reclassify as edema.
-    # For now, just ensure any tumor voxel (1/2/3) outside WT connected components is removed.
-    wt_mask = pred > 0
-    if wt_mask.sum() == 0:
-        return pred
-    labeled_wt, n_wt = ndimage_label(wt_mask)
-    for comp_id in range(1, n_wt + 1):
-        comp = labeled_wt == comp_id
-        if comp.sum() < 10:  # tiny isolated tumor islands → background
-            pred[comp] = 0
-    return pred
-
-
-def _get_dilation_struct():
-    from scipy.ndimage import generate_binary_structure
-    return generate_binary_structure(3, 1)  # 6-connectivity, computed once
-
-
-_DILATION_STRUCT_3D = _get_dilation_struct()
-
-
-def dilate_et_within_tc(
-    pred_argmax: np.ndarray, et_class: int = 3, necrotic_class: int = 1, iterations: int = 1,
-) -> np.ndarray:
-    """Dilate ET mask within TC region (class 1+3) to recover boundary voxels.
-
-    Only expands ET into necrotic (class 1) regions — cannot leak into edema or background.
-    TC and WT metrics are unaffected since class 1→3 stays within both region definitions.
-    """
-    from scipy.ndimage import binary_dilation
-
-    pred = pred_argmax.copy()
-    et_mask = pred == et_class
-    if et_mask.sum() == 0:
-        return pred
-    tc_mask = (pred == et_class) | (pred == necrotic_class)
-    dilated = binary_dilation(et_mask, structure=_DILATION_STRUCT_3D, iterations=iterations)
-    new_et = dilated & tc_mask & ~et_mask
-    pred[new_et] = et_class
-    return pred
-
-
 def load_model(config, checkpoint_path, device, bf16_mode=None):
     """Load model from checkpoint."""
     model_cfg = config['model']
@@ -396,13 +323,17 @@ def main():
 
     use_tta = args.tta
     use_postprocess = args.postprocess
+    use_advanced_pp = args.advanced_pp
     et_min_size = args.et_min_size
 
     print(f"\nEvaluating {len(dataset)} cases ({args.split} split)")
     print(f"Sliding window: patch={patch_size}, overlap={overlap}, text={args.use_text}")
     if use_tta:
         print("TTA: 8-fold flip ensemble ENABLED")
-    if use_postprocess:
+    if use_advanced_pp:
+        print(f"Advanced PP: WT≥{args.wt_min_size}, TC≥{args.tc_min_size}, ET≥{et_min_size}"
+              f" | WT_conf≥{args.wt_conf_thresh}, ET_conf≥{args.et_conf_thresh}")
+    elif use_postprocess:
         print(f"Post-processing: ET CC filter (min_size={et_min_size}) + hole fill + hierarchy enforcement")
     if args.et_boost != 1.0:
         print(f"ET boost: {args.et_boost}x (softmax channel multiplier)")
@@ -414,6 +345,7 @@ def main():
     if bf16_mode == 'pure':
         use_amp = False
     infer_fn = sliding_window_inference_tta if use_tta else sliding_window_inference
+    softmax_probs_needed = use_advanced_pp and (args.wt_conf_thresh > 0 or args.et_conf_thresh > 0)
 
     with torch.no_grad():
         for idx in tqdm(range(len(dataset)), desc='Evaluating'):
@@ -443,9 +375,22 @@ def main():
             pred_argmax = probs.argmax(dim=1).cpu()  # [1, D, H, W]
             pred_np = pred_argmax.squeeze().numpy()
 
-            # Post-processing pipeline (BraTS standard)
+            # Post-processing pipeline
             pp_applied = False
-            if use_postprocess:
+            if use_advanced_pp:
+                sp = probs.squeeze(0).cpu().numpy() if softmax_probs_needed else None
+                pred_np = postprocess_brats_advanced(
+                    pred_np,
+                    softmax_probs=sp,
+                    wt_min_size=args.wt_min_size,
+                    tc_min_size=args.tc_min_size,
+                    et_min_size=et_min_size,
+                    wt_conf_thresh=args.wt_conf_thresh,
+                    et_conf_thresh=args.et_conf_thresh,
+                    et_wt_ratio_thresh=args.et_wt_ratio,
+                )
+                pp_applied = True
+            elif use_postprocess:
                 pred_np = postprocess_et(pred_np, et_class=3, min_size=et_min_size)
                 pred_np = fill_holes_et(pred_np)
                 pred_np = enforce_region_hierarchy(pred_np)
