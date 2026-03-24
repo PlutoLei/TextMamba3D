@@ -8,6 +8,11 @@ data:
 augmentation:
   use_elastic: false
   use_modality_dropout: false
+  use_copy_paste: false       # Tumor copy-paste augmentation (BraTS 2023 winner strategy)
+  copy_paste_prob: 0.3        # Probability per sample
+  et_quantitative: false      # Append quantitative ET stats to text (dynamic, post-augmentation)
+  use_et_oversample: false    # WeightedRandomSampler boosting ET-rich cases
+  et_boost_factor: 3.0        # Weight multiplier for ET-rich cases
 
 training_tips:
   # 8GB 显存优化配置

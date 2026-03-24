@@ -288,12 +288,17 @@ def main():
     print(f'Gradient accumulation: {grad_accum}')
 
     # Data
-    use_elastic = config.get('augmentation', {}).get('use_elastic', False)
-    use_modality_dropout = config.get('augmentation', {}).get('use_modality_dropout', False)
+    aug_cfg = config.get('augmentation', {})
+    use_elastic = aug_cfg.get('use_elastic', False)
+    use_modality_dropout = aug_cfg.get('use_modality_dropout', False)
+    use_copy_paste = aug_cfg.get('use_copy_paste', False)
+    copy_paste_prob = aug_cfg.get('copy_paste_prob', 0.3)
     train_transform = get_train_transforms(
         tuple(config['data']['patch_size']),
         use_elastic=use_elastic,
         use_modality_dropout=use_modality_dropout,
+        use_copy_paste=use_copy_paste,
+        copy_paste_prob=copy_paste_prob,
     )
     val_transform = get_val_transforms(tuple(config['data']['patch_size']))
 
@@ -328,6 +333,7 @@ def main():
             val_ratio=val_ratio,
             et_enriched=et_enriched,
             enriched_prob=enriched_prob,
+            et_quantitative=aug_cfg.get('et_quantitative', False),
         )
         val_dataset = TextBraTSDataset(
             data_dir=config['data']['data_dir'],
@@ -339,6 +345,7 @@ def main():
             val_ratio=val_ratio,
             et_enriched=et_enriched,
             enriched_prob=enriched_prob,
+            et_quantitative=aug_cfg.get('et_quantitative', False),
         )
     else:
         # 原始 BraTS2021 数据集 (自动生成文本)
@@ -371,10 +378,29 @@ def main():
             "Check that data has been extracted to the correct path."
         )
 
+    # ET oversampling: use WeightedRandomSampler if enabled
+    use_et_oversample = aug_cfg.get('use_et_oversample', False)
+    et_boost_factor = aug_cfg.get('et_boost_factor', 3.0)
+    train_sampler = None
+    train_shuffle = True
+    if use_et_oversample:
+        from torch.utils.data import WeightedRandomSampler
+        from data.transforms import ETOversampler
+        weights = ETOversampler.compute_et_weights(
+            train_dataset, boost_factor=et_boost_factor
+        )
+        train_sampler = WeightedRandomSampler(
+            weights, num_samples=len(train_dataset), replacement=True
+        )
+        train_shuffle = False  # sampler handles ordering
+        print(f"ET oversampling: boost_factor={et_boost_factor}, "
+              f"weight range [{min(weights):.2f}, {max(weights):.2f}]")
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['data']['batch_size'],
-        shuffle=True,
+        shuffle=train_shuffle,
+        sampler=train_sampler,
         num_workers=config['data']['num_workers'],
         pin_memory=True,
     )

@@ -43,6 +43,7 @@ class TextBraTSDataset(Dataset):
         seed: int = 42,
         et_enriched: bool = False,  # 是否启用 ET-enriched 文本
         enriched_prob: float = 0.5,  # 训练时使用 enriched 文本的概率
+        et_quantitative: bool = False,  # Append quantitative ET stats to text
     ):
         self.data_dir = data_dir
         self.split = split
@@ -52,6 +53,7 @@ class TextBraTSDataset(Dataset):
         self.use_text_features = use_text_features
         self.et_enriched = et_enriched
         self.enriched_prob = enriched_prob
+        self.et_quantitative = et_quantitative
 
         # Find all cases and split
         all_cases = self._find_cases()
@@ -243,6 +245,15 @@ class TextBraTSDataset(Dataset):
                 text = (original_text + " " + enriched) if enriched else original_text
         else:
             text = original_text
+
+        # Quantitative ET text (computed AFTER transforms so it reflects augmented data)
+        if self.et_quantitative and self.split == 'train':
+            from data.et_quantitative_text import generate_quantitative_et_text
+            mask_np = mask.numpy() if hasattr(mask, 'numpy') else mask
+            if mask_np.ndim == 4:  # [1, D, H, W] → squeeze
+                mask_np = mask_np.squeeze(0)
+            qt = generate_quantitative_et_text(mask_np)
+            text = text + " " + qt
 
         # Tokenize text
         if self.tokenizer:
