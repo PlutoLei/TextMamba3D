@@ -148,6 +148,17 @@ class TextBraTSDataset(Dataset):
                 return f.read().strip()
         return None
 
+    def _load_random_paraphrase(self, case_dir: str, case_name: str):
+        """Load a random paraphrase if available."""
+        import glob
+        pattern = os.path.join(case_dir, f"{case_name}_paraphrase_*.txt")
+        files = glob.glob(pattern)
+        if not files:
+            return None
+        chosen = files[np.random.randint(0, len(files))]
+        with open(chosen, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+
     def _load_text_features(self, case_dir: str, case_name: str) -> Optional[np.ndarray]:
         """Load pre-computed text features if available."""
         npy_file = os.path.join(case_dir, f"{case_name}_flair_text.npy")
@@ -211,6 +222,12 @@ class TextBraTSDataset(Dataset):
 
         # Load expert text (NO information leakage!)
         original_text = self._load_text(case_dir, case_name)
+
+        # Text paraphrase augmentation (training only, 30% chance)
+        if self.split == 'train' and np.random.random() < 0.3:
+            para = self._load_random_paraphrase(case_dir, case_name)
+            if para:
+                original_text = para
 
         # LaCLIP stochastic selection: enriched text from T1ce image features
         if self.et_enriched:
