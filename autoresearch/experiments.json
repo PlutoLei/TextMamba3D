@@ -1,0 +1,74 @@
+{
+  "queue": [
+    {
+      "id": "L0-1",
+      "layer": 0,
+      "type": "eval_sweep",
+      "name": "ET/WT ratio relabeling",
+      "description": "Relabel ET as NCR when ET/WT volume ratio < threshold",
+      "params": {
+        "checkpoint": "best_v5.0.pth",
+        "config": "configs/archive/textbrats_a100_v5.yaml",
+        "split": "test",
+        "use_text": true,
+        "tta": true,
+        "sweep": {
+          "et_wt_ratio": [0.02, 0.03, 0.04, 0.05]
+        }
+      }
+    },
+    {
+      "id": "L0-2",
+      "layer": 0,
+      "type": "eval_sweep",
+      "name": "Advanced PP parameter sweep",
+      "description": "Sweep et_min_size and wt_min_size with best et_wt_ratio",
+      "params": {
+        "checkpoint": "best_v5.0.pth",
+        "config": "configs/archive/textbrats_a100_v5.yaml",
+        "split": "test",
+        "use_text": true,
+        "tta": true,
+        "sweep": {
+          "et_min_size": [50, 100, 200, 500],
+          "wt_min_size": [200, 500, 1000]
+        }
+      }
+    },
+    {
+      "id": "L0-3",
+      "layer": 0,
+      "type": "eval_compare",
+      "name": "TTA ablation",
+      "description": "Compare with and without TTA (BraTS 2023 winner found TTA can hurt)",
+      "params": {
+        "checkpoint": "best_v5.0.pth",
+        "config": "configs/archive/textbrats_a100_v5.yaml",
+        "split": "test",
+        "use_text": true,
+        "configs": [
+          {"name": "with_tta", "tta": true, "advanced_pp": true},
+          {"name": "no_tta", "tta": false, "advanced_pp": true}
+        ]
+      }
+    },
+    {
+      "id": "L0-4",
+      "layer": 0,
+      "type": "eval_sweep",
+      "name": "ET probability boost",
+      "description": "Multiply ET softmax channel by boost factor before argmax",
+      "params": {
+        "checkpoint": "best_v5.0.pth",
+        "config": "configs/archive/textbrats_a100_v5.yaml",
+        "split": "test",
+        "use_text": true,
+        "tta": true,
+        "sweep": {
+          "et_boost": [1.0, 1.1, 1.2, 1.3, 1.5]
+        }
+      }
+    }
+  ],
+  "completed": []
+}

@@ -1,0 +1,16 @@
+{
+  "baseline": {
+    "version": "v5.0",
+    "checkpoint": "best_v5.0.pth",
+    "mean_dice": 0.8479,
+    "dice_ET": 0.7910,
+    "dice_TC": 0.8560,
+    "dice_WT": 0.8967,
+    "config": "text+TTA+PP"
+  },
+  "best": {
+    "mean_dice": 0.8479,
+    "experiment_id": "baseline"
+  },
+  "experiments": []
+}
