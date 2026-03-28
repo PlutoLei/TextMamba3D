@@ -3,8 +3,8 @@
     "version": "v5.0",
     "checkpoint": "best_v5.0.pth",
     "mean_dice": 0.8479,
-    "dice_ET": 0.7910,
-    "dice_TC": 0.8560,
+    "dice_ET": 0.791,
+    "dice_TC": 0.856,
     "dice_WT": 0.8967,
     "config": "text+TTA+PP"
   },
@@ -12,5 +12,17 @@
     "mean_dice": 0.8479,
     "experiment_id": "baseline"
   },
-  "experiments": []
+  "experiments": [
+    {
+      "id": "L0-2_best",
+      "metrics": {
+        "dice_mean": 0.8479,
+        "dice_ET": 0.7896,
+        "dice_TC": 0.8566,
+        "dice_WT": 0.8974
+      },
+      "timestamp": "2026-03-28T09:45:05.373350",
+      "improved": false
+    }
+  ]
 }

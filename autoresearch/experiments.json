@@ -1,74 +1,147 @@
 {
   "queue": [
     {
-      "id": "L0-1",
-      "layer": 0,
-      "type": "eval_sweep",
-      "name": "ET/WT ratio relabeling",
-      "description": "Relabel ET as NCR when ET/WT volume ratio < threshold",
+      "id": "L1-1",
+      "layer": 1,
+      "type": "train",
+      "name": "Higher LR from scratch",
+      "description": "Train from scratch with lr=1e-4 (2x V5.0's lr). V5.0 used 5e-5 but fine-tune showed local minimum.",
       "params": {
-        "checkpoint": "best_v5.0.pth",
-        "config": "configs/archive/textbrats_a100_v5.yaml",
-        "split": "test",
-        "use_text": true,
-        "tta": true,
-        "sweep": {
-          "et_wt_ratio": [0.02, 0.03, 0.04, 0.05]
-        }
+        "config_overrides": {
+          "training": {
+            "lr": 0.0001,
+            "epochs": 200,
+            "patience": 30
+          },
+          "experiment": {
+            "name": "L1-1_lr1e4_scratch"
+          }
+        },
+        "from_scratch": true
       }
     },
     {
-      "id": "L0-2",
-      "layer": 0,
-      "type": "eval_sweep",
-      "name": "Advanced PP parameter sweep",
-      "description": "Sweep et_min_size and wt_min_size with best et_wt_ratio",
+      "id": "L1-2",
+      "layer": 1,
+      "type": "train",
+      "name": "Boundary Loss + Dice",
+      "description": "Replace CE with boundary loss (distance transform). Literature N7: +1-2% on ET.",
       "params": {
-        "checkpoint": "best_v5.0.pth",
-        "config": "configs/archive/textbrats_a100_v5.yaml",
-        "split": "test",
-        "use_text": true,
-        "tta": true,
-        "sweep": {
-          "et_min_size": [50, 100, 200, 500],
-          "wt_min_size": [200, 500, 1000]
-        }
+        "config_overrides": {
+          "loss": {
+            "use_boundary": true,
+            "boundary_weight": 0.5,
+            "ce_weight": 0.5
+          },
+          "training": {
+            "lr": 0.0001,
+            "epochs": 200,
+            "patience": 30
+          },
+          "experiment": {
+            "name": "L1-2_boundary_loss"
+          }
+        },
+        "from_scratch": true
       }
     },
     {
-      "id": "L0-3",
-      "layer": 0,
-      "type": "eval_compare",
-      "name": "TTA ablation",
-      "description": "Compare with and without TTA (BraTS 2023 winner found TTA can hurt)",
+      "id": "L1-3",
+      "layer": 1,
+      "type": "train",
+      "name": "Aggressive augmentation",
+      "description": "Stronger augmentation: elastic + modality dropout + copy-paste + higher no_text_ratio=0.3",
       "params": {
-        "checkpoint": "best_v5.0.pth",
-        "config": "configs/archive/textbrats_a100_v5.yaml",
-        "split": "test",
-        "use_text": true,
-        "configs": [
-          {"name": "with_tta", "tta": true, "advanced_pp": true},
-          {"name": "no_tta", "tta": false, "advanced_pp": true}
+        "config_overrides": {
+          "augmentation": {
+            "use_elastic": true,
+            "use_modality_dropout": true,
+            "use_copy_paste": true,
+            "copy_paste_prob": 0.5
+          },
+          "training": {
+            "lr": 0.0001,
+            "epochs": 200,
+            "patience": 30,
+            "no_text_ratio": 0.3
+          },
+          "experiment": {
+            "name": "L1-3_aggressive_aug"
+          }
+        },
+        "from_scratch": true
+      }
+    },
+    {
+      "id": "L1-4",
+      "layer": 1,
+      "type": "train",
+      "name": "ET-weighted early stopping",
+      "description": "Use ET Dice as early stopping metric instead of mean Dice. Forces model to optimize for ET.",
+      "params": {
+        "config_overrides": {
+          "training": {
+            "lr": 0.0001,
+            "epochs": 200,
+            "patience": 30
+          },
+          "loss": {
+            "class_weights": [
+              0.25,
+              2.0,
+              1.0,
+              6.0
+            ]
+          },
+          "experiment": {
+            "name": "L1-4_et_weighted"
+          }
+        },
+        "from_scratch": true,
+        "extra_args": [
+          "--es-metric",
+          "et"
         ]
       }
     },
     {
-      "id": "L0-4",
-      "layer": 0,
-      "type": "eval_sweep",
-      "name": "ET probability boost",
-      "description": "Multiply ET softmax channel by boost factor before argmax",
+      "id": "L1-5",
+      "layer": 1,
+      "type": "train_quick",
+      "name": "30-epoch screening: d_state=64",
+      "description": "Quick 30-epoch test: does Mamba2 with d_state=64 (instead of 16) improve? Higher state = more expressive.",
       "params": {
-        "checkpoint": "best_v5.0.pth",
-        "config": "configs/archive/textbrats_a100_v5.yaml",
-        "split": "test",
-        "use_text": true,
-        "tta": true,
-        "sweep": {
-          "et_boost": [1.0, 1.1, 1.2, 1.3, 1.5]
-        }
+        "config_overrides": {
+          "model": {
+            "d_state": 64
+          },
+          "training": {
+            "lr": 0.0001,
+            "epochs": 30,
+            "patience": 30
+          },
+          "experiment": {
+            "name": "L1-5_dstate64_quick"
+          }
+        },
+        "from_scratch": true
       }
     }
   ],
-  "completed": []
+  "completed": [
+    {
+      "id": "L0-2_best",
+      "result": {
+        "id": "L0-2_best",
+        "metrics": {
+          "dice_mean": 0.8479,
+          "dice_ET": 0.7896,
+          "dice_TC": 0.8566,
+          "dice_WT": 0.8974
+        },
+        "timestamp": "2026-03-28T09:45:05.373350",
+        "improved": false
+      }
+    }
+  ]
 }
