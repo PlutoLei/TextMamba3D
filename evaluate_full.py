@@ -423,6 +423,9 @@ def main():
             # Optionally save predictions
             if args.save_preds:
                 np.save(os.path.join(args.save_preds, f'{case_name}_pred.npy'), pred_np)
+                # Also save softmax probabilities for ensemble
+                probs_np = probs.squeeze(0).cpu().numpy()
+                np.save(os.path.join(args.save_preds, f'{case_name}_probs.npy'), probs_np)
 
     # Aggregate results
     print("\n" + "=" * 60)
