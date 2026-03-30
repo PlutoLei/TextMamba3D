@@ -9,8 +9,8 @@ data:
   num_workers: 4
   train_ratio: 0.596
   val_ratio: 0.149
-  et_enriched: true
-  enriched_prob: 0.5
+  et_enriched: false         # Stage 1: no text, no ET enrichment
+  enriched_prob: 0.0
 model:
   img_size:
   - 128
@@ -29,7 +29,7 @@ model:
   text_embed_dim: 256
   text_max_len: 192
   use_pretrained_text: true
-  unfreeze_text_layers: 2
+  unfreeze_text_layers: 0    # Stage 1: no text, freeze all BERT layers
   text_model_path: null
   use_mamba3: true
   headdim: 48
@@ -59,7 +59,7 @@ training:
   warmup_epochs: 10
   contrastive_warmup_epochs: 9999
   patience: 40
-  gradient_accumulation: 2
+  gradient_accumulation: 1   # Stage 1: batch_size=4 already sufficient
   gradient_checkpointing: false
   deep_supervision: true
   ds_weights:
