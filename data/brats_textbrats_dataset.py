@@ -11,6 +11,12 @@ import nibabel as nib
 from torch.utils.data import Dataset
 from typing import Optional, Callable, List
 
+try:
+    from losses.boundary_loss import compute_distance_map as _compute_dm
+    _HAS_BOUNDARY = True
+except ImportError:
+    _HAS_BOUNDARY = False
+
 
 class TextBraTSDataset(Dataset):
     """
@@ -291,6 +297,14 @@ class TextBraTSDataset(Dataset):
             'attention_mask': attention_mask,
             'case_name': case_name,
         }
+
+        # V7.0: compute distance map from cropped mask for boundary loss
+        if _HAS_BOUNDARY:
+            mask_np = mask.numpy() if hasattr(mask, 'numpy') else mask
+            if mask_np.ndim == 4:  # [1, D, H, W] → squeeze
+                mask_np = mask_np.squeeze(0)
+            dist_map = _compute_dm(mask_np, num_classes=4)
+            result['distance_map'] = torch.from_numpy(dist_map)
 
         # Optionally load pre-computed text features
         if self.use_text_features:

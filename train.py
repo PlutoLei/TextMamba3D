@@ -100,6 +100,7 @@ def train_epoch(
     model, loader, criterion, optimizer, device, epoch,
     scaler=None, use_amp=False, no_text_ratio=0.1, grad_accum=1,
     need_features=True, clip_norm=1.0, bf16_mode=None,
+    total_epochs=200,
 ) -> tuple[float, float]:
     model.train()
     total_loss = 0.0
@@ -113,6 +114,9 @@ def train_epoch(
         if bf16_mode == 'pure':
             image = image.to(dtype=torch.bfloat16)
         mask = batch['mask'].to(device)
+        distance_map = batch.get('distance_map')
+        if distance_map is not None:
+            distance_map = distance_map.to(device)
         text_ids = batch['text_ids'].to(device)
         attn_mask = batch.get('attention_mask')
         if attn_mask is not None:
@@ -147,6 +151,9 @@ def train_epoch(
                 pixel_feat=pixel_feat,
                 mask_orig=mask,
                 aux_preds=aux_preds,
+                distance_map=distance_map,
+                epoch=epoch,
+                total_epochs=total_epochs,
             )['total']
             loss = loss / grad_accum  # 梯度累积：损失除以累积步数
 
@@ -477,6 +484,12 @@ def main():
     class_weights = config['loss'].get('class_weights', BRATS_CLASS_WEIGHTS)
     print(f'Class weights: {class_weights}')
 
+    # V7.0: Boundary + Hierarchy Loss config
+    use_boundary = config['loss'].get('use_boundary', False)
+    boundary_max_weight = config['loss'].get('boundary_max_weight', 1.0)
+    use_hierarchy = config['loss'].get('use_hierarchy', False)
+    hierarchy_weight = config['loss'].get('hierarchy_weight', 0.1)
+
     criterion = CombinedLoss(
         dice_weight=config['loss']['dice_weight'],
         ce_weight=config['loss']['ce_weight'],
@@ -491,6 +504,11 @@ def main():
         ftl_alpha=config['loss'].get('ftl_alpha', 0.3),
         ftl_beta=config['loss'].get('ftl_beta', 0.7),
         ftl_gamma=config['loss'].get('ftl_gamma', 1.33),
+        # V7.0: Boundary + Hierarchy Loss
+        use_boundary=use_boundary,
+        boundary_max_weight=boundary_max_weight,
+        use_hierarchy=use_hierarchy,
+        hierarchy_weight=hierarchy_weight,
     ).to(device)
 
     # Optimizer
@@ -575,6 +593,7 @@ def main():
             scaler=scaler, use_amp=use_amp, no_text_ratio=no_text_ratio,
             grad_accum=grad_accum, need_features=need_features, clip_norm=cfg_clip,
             bf16_mode=bf16_mode,
+            total_epochs=total_epochs,
         )
 
         # Validate with text (standard mode)
