@@ -33,6 +33,11 @@ class CombinedLoss(nn.Module):
         ftl_alpha: float = 0.3,
         ftl_beta: float = 0.7,
         ftl_gamma: float = 1.33,
+        # V7.0: Boundary + Hierarchy Loss
+        use_boundary: bool = False,
+        boundary_max_weight: float = 1.0,
+        use_hierarchy: bool = False,
+        hierarchy_weight: float = 0.1,
     ) -> None:
         super().__init__()
         self.dice_weight = dice_weight
@@ -64,6 +69,19 @@ class CombinedLoss(nn.Module):
         else:
             self.ce_class_weights = None
 
+        # V7.0: Boundary + Hierarchy Loss
+        self.use_boundary = use_boundary
+        self.boundary_max_weight = boundary_max_weight
+        if use_boundary:
+            from losses.boundary_loss import BoundaryLoss
+            self.boundary_loss = BoundaryLoss(include_background=False)
+
+        self.use_hierarchy = use_hierarchy
+        self.hierarchy_weight = hierarchy_weight
+        if use_hierarchy:
+            from losses.hierarchy_loss import HierarchyLoss
+            self.hierarchy_loss = HierarchyLoss()
+
     def _zero(self, pred: torch.Tensor) -> torch.Tensor:
         """Return a zero scalar on the same device as pred."""
         return pred.new_zeros(())
@@ -78,6 +96,9 @@ class CombinedLoss(nn.Module):
         mask: torch.Tensor | None = None,
         mask_orig: torch.Tensor | None = None,
         aux_preds: list[torch.Tensor] | None = None,
+        distance_map: torch.Tensor | None = None,
+        epoch: int = 0,
+        total_epochs: int = 80,
     ) -> dict[str, torch.Tensor]:
         losses = {}
 
@@ -130,6 +151,21 @@ class CombinedLoss(nn.Module):
             self.edge_weight * losses['edge'] +
             self.contrastive_weight * losses['contrastive']
         )
+
+        # V7.0: Boundary Loss with linear alpha annealing
+        if self.use_boundary and distance_map is not None:
+            alpha = min(1.0, epoch / max(1, total_epochs)) * self.boundary_max_weight
+            pred_soft = torch.softmax(pred.float(), dim=1)
+            bl = self.boundary_loss(pred_soft, distance_map.float())
+            losses['boundary'] = bl * alpha
+            total = total + losses['boundary']
+
+        # V7.0: Hierarchy Loss (fixed weight)
+        if self.use_hierarchy:
+            hl = self.hierarchy_loss(pred.float())
+            losses['hierarchy'] = hl * self.hierarchy_weight
+            total = total + losses['hierarchy']
+
         # Clamp finite values only — NaN/Inf pass through for training loop detection
         losses['total'] = total.clamp(0.0, 20.0) if total.isfinite() else total
 
