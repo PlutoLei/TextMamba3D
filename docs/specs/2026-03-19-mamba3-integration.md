@@ -858,7 +858,7 @@ Update `.claude/tasks/bs6222_textmamba3d_proposal.md` to reflect V5.0 plan:
 Add under `## 待完成事项`:
 ```markdown
 - [ ] V5.0: Mamba-3 SSM 集成（代码完成，待 A100 训练验证）
-  - 实施计划: `TextMamba3D/docs/superpowers/plans/2026-03-19-mamba3-integration.md`
+  - 实施计划: `TextMamba3D/docs/specs/2026-03-19-mamba3-integration.md`
   - 配置: `configs/textbrats_a100_v5.yaml`
   - 测试: `tests/test_mamba3.py`
 ```

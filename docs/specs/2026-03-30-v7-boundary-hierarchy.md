@@ -8,7 +8,7 @@
 
 **Tech Stack:** PyTorch, scipy.ndimage.distance_transform_edt, nibabel, pyyaml
 
-**Spec:** `docs/superpowers/specs/2026-03-30-v7-boundary-hierarchy-design.md`
+**Spec:** `docs/specs/2026-03-30-v7-boundary-hierarchy-design.md`
 
 ---
 

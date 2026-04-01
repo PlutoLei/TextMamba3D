@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, nbformat (notebook generation), anthropic SDK (hypothesis engine), pyyaml, json
 
-**Spec:** `docs/superpowers/specs/2026-03-27-autoresearch-design.md`
+**Spec:** `docs/specs/2026-03-27-autoresearch-design.md`
 
 ---
 

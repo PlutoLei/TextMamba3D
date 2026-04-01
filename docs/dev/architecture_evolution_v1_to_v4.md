@@ -295,7 +295,7 @@ V4.1 前向传播返回 3-tuple `(seg_output, img_global, text_global)`；V4.2 �
 |------|------|
 | docs/architecture_v2_postmortem.md | V2 失败详细分析 |
 | docs/text_guidance_improvement_plan.md | 4 步改进计划及 V4 结果 |
-| docs/planning/research_summary.md | 文献调研总结 |
+| docs/specs/research_summary.md | 文献调研总结 |
 | models/textmamba3d.py | 主模型（当前 V4.2） |
 | models/fusion.py | MultiScalePixelTextAttention |
 | losses/contrastive_loss.py | ContrastiveLoss + ForegroundContrastiveLoss |
@@ -325,7 +325,7 @@ V4.1 前向传播返回 3-tuple `(seg_output, img_global, text_global)`；V4.2 �
 
 ### 11.2 Codex DEBATE（10 issues resolved）
 
-蓝图经过 Codex (GPT-5.4) 对抗性质询，修正了 10 个关键问题，包括：768 vs 256 维度不匹配、mask shape、T2VLoss 用错 tensor、OOM 风险等。详见 `docs/plans/v43_blueprint_locked.md`。
+蓝图经过 Codex (GPT-5.4) 对抗性质询，修正了 10 个关键问题，包括：768 vs 256 维度不匹配、mask shape、T2VLoss 用错 tensor、OOM 风险等。详见 `docs/specs/v43_blueprint_locked.md`。
 
 ### 11.3 结果
 

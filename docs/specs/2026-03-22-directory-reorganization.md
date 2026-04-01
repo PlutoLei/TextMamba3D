@@ -8,7 +8,7 @@
 
 **Tech Stack:** Git, Bash
 
-**Spec:** `docs/superpowers/specs/2026-03-22-directory-reorganization-design.md`
+**Spec:** `docs/specs/2026-03-22-directory-reorganization-design.md`
 
 ---
 

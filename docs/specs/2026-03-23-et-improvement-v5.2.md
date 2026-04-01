@@ -8,7 +8,7 @@
 
 **Tech Stack:** PyTorch, mamba-ssm, einops. Execution via Jupyter notebook on Colab A100 40GB.
 
-**Spec:** `docs/superpowers/specs/2026-03-23-et-improvement-v5.2-design.md`
+**Spec:** `docs/specs/2026-03-23-et-improvement-v5.2-design.md`
 
 ---
 
