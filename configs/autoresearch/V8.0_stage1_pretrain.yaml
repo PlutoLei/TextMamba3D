@@ -5,7 +5,7 @@ data:
   - 128
   - 128
   - 128
-  batch_size: 4
+  batch_size: 8              # H100 80GB can handle larger batch
   num_workers: 4
   train_ratio: 0.596
   val_ratio: 0.149
