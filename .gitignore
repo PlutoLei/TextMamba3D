@@ -1,26 +1,43 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+
+# Environment
 .env
 .venv/
 venv/
+
+# Data (large files)
 data/BraTS*/
+data/TextBraTS/
+archive.zip
+TextBraTS_data.zip
+
+# Model weights
 checkpoints/
-logs/
+pretrained/
 *.pt
 *.pth
-.DS_Store
-.idea/
-pretrained/
-docs/run_*/
-docs/architecture_prompt.txt
-.claude/
-data/brats_dataset_fast.py
+
+# Logs
+logs/
 training_log*.txt
 *.log
-nexus_state.json
-TextBraTS_data.zip
-docs/plans/
-docs/papers/**/*.pdf
+
+# IDE & tools
+.DS_Store
+.idea/
+.pytest_cache/
 .ruff_cache/
 .crossfire/
+.claude/
+nexus_state.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Docs (generated/large)
+docs/run_*/
+docs/architecture_prompt.txt
+docs/papers/**/*.pdf
