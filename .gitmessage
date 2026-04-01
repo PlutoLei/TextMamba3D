@@ -1,0 +1,14 @@
+<type>(<scope>): <subject>
+
+# type: feat | fix | docs | test | chore | refactor | perf
+# scope: 可选，如 v8, model, loss, data, notebook
+# subject: 简明描述，不超过 72 字符
+#
+# 示例:
+#   feat(v8): two-stage training configs and notebook
+#   fix(model): correct decoder skip connection dimensions
+#   docs: update experiment log with V7.0 results
+#   test(v7): boundary loss and hierarchy loss unit tests
+#   chore: update .gitignore
+#   refactor: extract text encoder into separate module
+#   perf(v8): batch_size 4->8 for H100 80GB
