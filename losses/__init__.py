@@ -6,6 +6,7 @@ from .dice_loss import DiceLoss, BRATS_CLASS_WEIGHTS
 from .focal_tversky_loss import FocalTverskyLoss
 from .edge_loss import EdgeLoss
 from .contrastive_loss import ContrastiveLoss, ForegroundContrastiveLoss
+from .alignment_loss import InfoNCELoss
 
 
 class CombinedLoss(nn.Module):
@@ -33,6 +34,8 @@ class CombinedLoss(nn.Module):
         ftl_alpha: float = 0.3,
         ftl_beta: float = 0.7,
         ftl_gamma: float = 1.33,
+        # V9.0: Text-image alignment loss
+        alignment_weight: float = 0.0,
         # V7.0: Boundary + Hierarchy Loss
         use_boundary: bool = False,
         boundary_max_weight: float = 1.0,
@@ -53,6 +56,8 @@ class CombinedLoss(nn.Module):
         else:
             self.dice_loss = DiceLoss(class_weights=class_weights)
         self.edge_loss = EdgeLoss()
+        self.alignment_loss = InfoNCELoss(temperature=temperature)
+        self.alignment_weight = alignment_weight
         self.contrastive_loss = ContrastiveLoss(temperature)
         self.fg_contrastive_loss = ForegroundContrastiveLoss(
             temperature=temperature,
@@ -151,6 +156,12 @@ class CombinedLoss(nn.Module):
             self.edge_weight * losses['edge'] +
             self.contrastive_weight * losses['contrastive']
         )
+
+        # V9.0: Text-image alignment loss
+        if self.alignment_weight > 0 and img_feat is not None and text_feat is not None:
+            align_loss = self.alignment_loss(img_feat, text_feat)
+            total += self.alignment_weight * align_loss
+            losses['alignment'] = align_loss.item()
 
         # V7.0: Boundary Loss with linear alpha annealing
         if self.use_boundary and distance_map is not None:

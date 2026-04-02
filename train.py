@@ -518,6 +518,8 @@ def main():
         boundary_max_weight=boundary_max_weight,
         use_hierarchy=use_hierarchy,
         hierarchy_weight=hierarchy_weight,
+        # V9.0: Text-image alignment loss
+        alignment_weight=config['loss'].get('alignment_weight', 0.0),
     ).to(device)
 
     # Manual LR schedule config (warmup + cosine decay)
