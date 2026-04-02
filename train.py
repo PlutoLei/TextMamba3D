@@ -45,6 +45,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--es-metric', type=str, default='mean',
                         choices=['mean', 'et', 'weighted'],
                         help='Early stopping metric: mean Dice, ET Dice, or weighted (0.5*ET+0.25*TC+0.25*WT)')
+    parser.add_argument('--freeze-vision-epochs', type=int, default=0,
+                        help='Freeze img_encoder for first N epochs (text warmup)')
     return parser.parse_args()
 
 
@@ -511,17 +513,26 @@ def main():
         hierarchy_weight=hierarchy_weight,
     ).to(device)
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config['training']['lr'],
-        weight_decay=config['training']['weight_decay'],
-    )
-
     # Manual LR schedule config (warmup + cosine decay)
     warmup_epochs = config['training'].get('warmup_epochs', 5)
     total_epochs = args.max_epochs if args.max_epochs is not None else config['training']['epochs']
     base_lr = config['training']['lr']
+
+    # Optimizer (separate param groups when freezing vision backbone)
+    if args.freeze_vision_epochs > 0:
+        img_params = list(model.img_encoder.parameters())
+        img_param_ids = {id(p) for p in img_params}
+        other_params = [p for p in model.parameters() if id(p) not in img_param_ids]
+        optimizer = torch.optim.AdamW([
+            {'params': other_params, 'lr': base_lr},
+            {'params': img_params, 'lr': 0.0},
+        ], weight_decay=config['training']['weight_decay'])
+        print(f'img_encoder frozen for first {args.freeze_vision_epochs} epochs (LR=0)')
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=base_lr,
+            weight_decay=config['training']['weight_decay'],
+        )
     cfg_clip = config['training'].get('gradient_clip_norm', 1.0)
 
     # AMP scaler — bfloat16 does NOT need GradScaler (same exponent range as fp32)
@@ -561,10 +572,17 @@ def main():
             optimizer.load_state_dict(checkpoint['optimizer'])
         if scaler is not None and checkpoint.get('scaler') is not None:
             scaler.load_state_dict(checkpoint['scaler'])
-        start_epoch = checkpoint['epoch'] + 1
-        best_dice = checkpoint.get('best_dice', 0)
-        best_dice_no_text = checkpoint.get('best_dice_no_text', 0)
-        print(f'Resumed from epoch {start_epoch}')
+        if args.reset_optimizer:
+            # Fine-tuning: reset epoch counter + best metrics for new stage
+            start_epoch = 0
+            best_dice = 0
+            best_dice_no_text = 0
+            print(f'Epoch/metrics reset for fine-tuning (loaded model weights only)')
+        else:
+            start_epoch = checkpoint['epoch'] + 1
+            best_dice = checkpoint.get('best_dice', 0)
+            best_dice_no_text = checkpoint.get('best_dice_no_text', 0)
+            print(f'Resumed from epoch {start_epoch}')
 
     # Training loop
     for epoch in range(start_epoch, total_epochs):
@@ -586,6 +604,14 @@ def main():
             current_lr = get_lr(epoch, warmup_epochs, base_lr, total_epochs)
         for param_group in optimizer.param_groups:
             param_group['lr'] = current_lr
+
+        # Vision freeze warmup: keep img_encoder LR=0 during frozen phase
+        if args.freeze_vision_epochs > 0:
+            if epoch < args.freeze_vision_epochs:
+                optimizer.param_groups[1]['lr'] = 0.0
+            elif epoch == args.freeze_vision_epochs:
+                optimizer.param_groups[1]['lr'] = current_lr * 0.1
+                print(f'Unfroze img_encoder at epoch {epoch} (lr={current_lr*0.1:.2e})')
 
         # Train
         train_loss, max_grad_norm = train_epoch(
@@ -655,9 +681,9 @@ def main():
 
         save_checkpoint('checkpoints/last.pth')
 
-        # Colab Drive auto-backup every 10 epochs
+        # Colab Drive auto-backup every 5 epochs
         drive_ckpt = os.environ.get('DRIVE_CKPT_DIR')
-        if drive_ckpt and (epoch + 1) % 10 == 0:
+        if drive_ckpt and (epoch + 1) % 5 == 0:
             try:
                 os.makedirs(drive_ckpt, exist_ok=True)
                 for fname in ['best.pth', 'best_no_text.pth', 'last.pth']:
