@@ -47,6 +47,8 @@ def parse_args() -> argparse.Namespace:
                         help='Early stopping metric: mean Dice, ET Dice, or weighted (0.5*ET+0.25*TC+0.25*WT)')
     parser.add_argument('--freeze-vision-epochs', type=int, default=0,
                         help='Freeze img_encoder for first N epochs (text warmup)')
+    parser.add_argument('--vision-dropout', type=float, default=0.0,
+                        help='Probability of zeroing vision features (force text usage)')
     return parser.parse_args()
 
 
@@ -476,6 +478,11 @@ def main():
               f'headdim={config["model"].get("headdim", "auto")})')
     else:
         print('SSM Backend: Mamba-1 (default)')
+
+    # V9.0: Vision modality dropout
+    model.vision_dropout_rate = args.vision_dropout
+    if args.vision_dropout > 0:
+        print(f'Vision modality dropout: {args.vision_dropout:.1%}')
 
     # Count parameters
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

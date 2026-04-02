@@ -123,6 +123,9 @@ class TextMamba3D(nn.Module):
             is_mimo=is_mimo,
         )
 
+        # V9.0: Vision modality dropout — force text utilization
+        self.vision_dropout_rate = 0.0  # set via train.py
+
         self.img_proj = nn.Sequential(
             nn.Linear(bottleneck_dim, text_embed_dim),
             nn.LayerNorm(text_embed_dim),
@@ -143,6 +146,12 @@ class TextMamba3D(nn.Module):
     ]:
         """Forward pass for text-guided 3D segmentation."""
         img_features = self.img_encoder(img)
+
+        # V9.0: randomly zero out vision features to force text usage
+        # Note: applies to entire batch for simplicity
+        if self.training and self.vision_dropout_rate > 0:
+            if torch.rand(1).item() < self.vision_dropout_rate:
+                img_features = [torch.zeros_like(f) for f in img_features]
 
         has_text = use_text and text_ids is not None
         if has_text:
