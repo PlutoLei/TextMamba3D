@@ -49,6 +49,7 @@ loss:
   boundary_max_weight: 1.0
   use_hierarchy: true
   hierarchy_weight: 0.1
+  alignment_weight: 0.1
 augmentation:
   use_elastic: true
   use_modality_dropout: true
