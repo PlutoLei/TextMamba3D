@@ -215,8 +215,9 @@ class SequentialCrossAttention(nn.Module):
         self.i2t_v = nn.Linear(feat_dim, feat_dim)
         self.i2t_out = nn.Linear(feat_dim, feat_dim)
 
-        # Zero-init Step 2 output for identity-preserving start
-        nn.init.zeros_(self.i2t_out.weight)
+        # Small-magnitude init: non-zero gradient flow but near-identity start
+        nn.init.xavier_uniform_(self.i2t_out.weight)
+        self.i2t_out.weight.data *= 0.01
         nn.init.zeros_(self.i2t_out.bias)
 
     def _multi_head_attn(
