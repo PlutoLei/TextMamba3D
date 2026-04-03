@@ -8,6 +8,7 @@ import torch.nn as nn
 
 from .decoder_3d import MambaDecoder3D
 from .encoder_3d import MambaEncoder3D
+from .concat_fusion import MultiScaleConcatFusion
 from .fusion import MultiScalePixelTextAttention, MultiScaleSeqCA, MultiScaleTextGate
 from .text_encoder import TextMambaEncoder
 
@@ -44,7 +45,7 @@ class TextMamba3D(nn.Module):
         chunk_size: int | None = None,
         is_mimo: bool = False,
         # Fusion module selection
-        fusion_type: str = "seqca",  # "seqca" | "pixeltext"
+        fusion_type: str = "seqca",  # "seqca" | "concat_scan" | "pixeltext"
         # V5.2 Edge Enhancement
         use_edge_enhance: bool = False,
     ) -> None:
@@ -87,12 +88,20 @@ class TextMamba3D(nn.Module):
 
         # Multi-scale cross-attention: stages 1,2,3 (stage 0 excluded)
         stage_dims = [embed_dim * (2 ** i) for i in range(1, len(depths))]
-        fusion_cls = MultiScaleSeqCA if fusion_type == "seqca" else MultiScalePixelTextAttention
-        self.multi_scale_attn = fusion_cls(
+        if fusion_type == "seqca":
+            fusion_cls = MultiScaleSeqCA
+        elif fusion_type == "concat_scan":
+            fusion_cls = MultiScaleConcatFusion
+        else:
+            fusion_cls = MultiScalePixelTextAttention
+        fusion_kwargs = dict(
             stage_dims=stage_dims,
             text_dim=text_embed_dim,
             num_heads=4,
         )
+        if fusion_type == "concat_scan":
+            fusion_kwargs["use_mamba3"] = use_mamba3
+        self.multi_scale_attn = fusion_cls(**fusion_kwargs)
 
         # V4.6 Direction B: Text Scale Gate
         if use_text_gate:
