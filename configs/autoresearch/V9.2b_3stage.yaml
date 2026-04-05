@@ -1,0 +1,82 @@
+data:
+  data_dir: ./data/BraTS2020/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData
+  dataset_type: textbrats
+  patch_size:
+  - 128
+  - 128
+  - 128
+  batch_size: 2
+  num_workers: 4
+  train_ratio: 0.596
+  val_ratio: 0.149
+  et_enriched: true
+  enriched_prob: 0.5
+model:
+  img_size:
+  - 128
+  - 128
+  - 128
+  in_channels: 4
+  out_channels: 4
+  embed_dim: 48
+  depths:
+  - 2
+  - 2
+  - 2
+  - 2
+  d_state: 16
+  dropout: 0.1
+  text_embed_dim: 256
+  text_max_len: 192
+  use_pretrained_text: true
+  unfreeze_text_layers: 2
+  text_model_path: null
+  use_mamba3: true
+  headdim: 48
+  fusion_type: seqca
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  edge_weight: 1.0
+  contrastive_weight: 0.05
+  temperature: 0.07
+  class_weights:
+  - 0.25
+  - 3.0
+  - 1.0
+  - 4.0
+  use_boundary: true
+  boundary_max_weight: 1.0
+  use_hierarchy: true
+  hierarchy_weight: 0.1
+  alignment_weight: 0.0
+augmentation:
+  use_elastic: true
+  use_modality_dropout: true
+training:
+  epochs: 100
+  lr: 1.0e-04
+  weight_decay: 0.01
+  warmup_epochs: 10
+  contrastive_warmup_epochs: 30
+  patience: 30
+  gradient_accumulation: 2
+  gradient_checkpointing: false
+  deep_supervision: true
+  ds_weights:
+  - 0.2
+  - 0.1
+  - 0.05
+  use_amp: true
+  no_text_ratio: 0.15
+  gradient_clip_norm: 1.0
+eval:
+  metrics:
+  - dice
+  - hd95
+  sliding_window: true
+  sw_overlap: 0.5
+  sw_batch_size: 2
+experiment:
+  name: V9.2b_3stage
+  description: 'V9.2b: 3-stage training — Stage 2 freeze backbone, train text+fusion+decoder only'
