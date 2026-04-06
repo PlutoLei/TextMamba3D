@@ -93,12 +93,12 @@ class TextSegConsistencyLoss(nn.Module):
         B = pred.size(0)
         probs = pred.softmax(dim=1)  # [B, C, D, H, W]
 
-        # Region probabilities (spatial average)
+        # Region logits (spatial average of raw logits, AMP-safe)
         # ET = class 3
-        et_prob = probs[:, 3].mean(dim=(1, 2, 3))   # [B]
+        et_logit = pred[:, 3].float().mean(dim=(1, 2, 3))   # [B]
         # Edema = class 2
-        ed_prob = probs[:, 2].mean(dim=(1, 2, 3))   # [B]
-        # Total tumor volume fraction
+        ed_logit = pred[:, 2].float().mean(dim=(1, 2, 3))   # [B]
+        # Total tumor volume fraction (from probs, for volume loss only)
         tumor_frac = (1 - probs[:, 0]).mean(dim=(1, 2, 3))  # [B]
 
         # Parse text for expected properties
@@ -106,16 +106,13 @@ class TextSegConsistencyLoss(nn.Module):
 
         loss = torch.tensor(0.0, device=pred.device)
 
-        # 1. Region presence loss
-        # If text says ET present (has_et=1), et_prob should be > 0
-        # If text says ET absent (has_et=0), et_prob should be ~0
+        # 1. Region presence loss (use logits for AMP safety)
         if self.presence_weight > 0:
-            # BCE between predicted region probability and text-derived label
             et_target = text_props['has_et']
             ed_target = text_props['has_edema']
             presence_loss = (
-                F.binary_cross_entropy(et_prob.clamp(1e-7, 1-1e-7), et_target)
-                + F.binary_cross_entropy(ed_prob.clamp(1e-7, 1-1e-7), ed_target)
+                F.binary_cross_entropy_with_logits(et_logit, et_target)
+                + F.binary_cross_entropy_with_logits(ed_logit, ed_target)
             ) / 2
             loss = loss + self.presence_weight * presence_loss
 
