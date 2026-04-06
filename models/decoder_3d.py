@@ -4,6 +4,7 @@ import torch.nn as nn
 from einops import rearrange
 from .mamba_block import CrossScanBiMamba3DLayer
 from .fusion import CrossScaleSkipAttention
+from .decoder_film import DecoderFiLM
 
 
 class PatchExpanding3D(nn.Module):
@@ -46,6 +47,9 @@ class MambaDecoder3D(nn.Module):
         deep_supervision: bool = False,
         use_cross_scale_skip: bool = False,
         use_edge_enhance: bool = False,
+        # V10.0: decoder-side text conditioning
+        use_decoder_film: bool = False,
+        text_embed_dim: int = 256,
         use_mamba3: bool = False,
         headdim: int | None = None,
         rope_fraction: float | None = None,
@@ -57,6 +61,7 @@ class MambaDecoder3D(nn.Module):
         self.deep_supervision = deep_supervision
         self.use_cross_scale_skip = use_cross_scale_skip
         self.use_edge_enhance = use_edge_enhance
+        self.use_decoder_film = use_decoder_film
 
         d, h, w = img_size[0] // patch_size[0], \
                   img_size[1] // patch_size[1], \
@@ -65,6 +70,9 @@ class MambaDecoder3D(nn.Module):
         self.stages = nn.ModuleList()
         self.upsamples = nn.ModuleList()
         self.skip_projs = nn.ModuleList()
+
+        # V10.0: decoder-side FiLM conditioning (one per skip connection)
+        self.decoder_films = nn.ModuleList() if use_decoder_film else None
 
         # V4.6: cross-scale attention modules (one per skip connection)
         self.cross_scale_attns = nn.ModuleList() if use_cross_scale_skip else None
@@ -114,6 +122,12 @@ class MambaDecoder3D(nn.Module):
                         EdgeEnhance3D(channels=skip_dim, spatial_dims=skip_spatial)
                     )
 
+                # V10.0: decoder FiLM after skip merge
+                if use_decoder_film:
+                    self.decoder_films.append(
+                        DecoderFiLM(feat_dim=dim // 2, text_dim=text_embed_dim)
+                    )
+
                 # V4.6: cross-scale attention (supplemental)
                 if use_cross_scale_skip:
                     target_dim = dim // 2
@@ -146,10 +160,11 @@ class MambaDecoder3D(nn.Module):
         self.patch_size = patch_size
         self.base_spatial = (d, h, w)
 
-    def forward(self, features: list) -> torch.Tensor:
+    def forward(self, features: list, text_global: torch.Tensor | None = None) -> torch.Tensor:
         """
         Args:
             features: List of encoder features [stage0, stage1, ..., bottleneck]
+            text_global: [B, D_text] text CLS token (for decoder FiLM)
         Returns:
             [B, out_channels, D, H, W]
         """
@@ -178,6 +193,10 @@ class MambaDecoder3D(nn.Module):
                         skip = self.edge_enhances[i](skip)
 
                     x = x + skip
+
+                    # V10.0: decoder FiLM conditioning
+                    if self.use_decoder_film and self.decoder_films is not None and text_global is not None:
+                        x = self.decoder_films[i](x, text_global)
 
                     # V4.6: cross-scale supplemental attention
                     if self.use_cross_scale_skip and self.cross_scale_attns is not None:

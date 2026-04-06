@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 from .decoder_3d import MambaDecoder3D
+from .decoder_film import FeatureNoiseInjector
 from .encoder_3d import MambaEncoder3D
 from .concat_fusion import MultiScaleConcatFusion
 from .fusion import MultiScalePixelTextAttention, MultiScaleSeqCA, MultiScaleTextGate
@@ -48,6 +49,9 @@ class TextMamba3D(nn.Module):
         fusion_type: str = "seqca",  # "seqca" | "concat_scan" | "pixeltext"
         # V5.2 Edge Enhancement
         use_edge_enhance: bool = False,
+        # V10.0: feature noise + decoder FiLM
+        feature_noise_rate: float = 0.0,
+        use_decoder_film: bool = False,
     ) -> None:
         super().__init__()
 
@@ -112,6 +116,9 @@ class TextMamba3D(nn.Module):
         else:
             self.text_gate = None
 
+        # V10.0: feature noise injector (creates information deficit for text)
+        self.feature_noise = FeatureNoiseInjector(noise_rate=feature_noise_rate)
+
         # V4.6 Direction A: pass use_cross_scale_skip to decoder
         self.decoder = MambaDecoder3D(
             img_size=img_size,
@@ -125,6 +132,8 @@ class TextMamba3D(nn.Module):
             deep_supervision=deep_supervision,
             use_cross_scale_skip=use_cross_scale_skip,
             use_edge_enhance=use_edge_enhance,
+            use_decoder_film=use_decoder_film,
+            text_embed_dim=text_embed_dim,
             use_mamba3=use_mamba3,
             headdim=headdim,
             rope_fraction=rope_fraction,
@@ -162,13 +171,18 @@ class TextMamba3D(nn.Module):
             if torch.rand(1).item() < self.vision_dropout_rate:
                 img_features = [torch.zeros_like(f) for f in img_features]
 
+        # V10.0: inject feature noise to create information deficit
+        img_features = self.feature_noise(img_features)
+
         has_text = use_text and text_ids is not None
+        text_global = None
         if has_text:
             text_features = self.text_encoder(text_ids, attention_mask)
             # BERT runs in fp32 even in bf16 mode; align to model precision
             model_dtype = self.img_proj[0].weight.dtype
             if text_features.dtype != model_dtype:
                 text_features = text_features.to(dtype=model_dtype)
+            text_global = self.text_encoder.get_global_feature(text_features)
             fused = self.multi_scale_attn(
                 img_features[1:], text_features, attention_mask
             )
@@ -179,7 +193,8 @@ class TextMamba3D(nn.Module):
         else:
             decoder_features = img_features
 
-        seg_output = self.decoder(decoder_features)
+        # V10.0: pass text_global to decoder for FiLM conditioning
+        seg_output = self.decoder(decoder_features, text_global=text_global)
 
         if not return_features:
             return seg_output
@@ -187,7 +202,6 @@ class TextMamba3D(nn.Module):
         if has_text:
             pixel_feat = decoder_features[-1]
             img_global = self.img_proj(pixel_feat.mean(dim=1))
-            text_global = self.text_encoder.get_global_feature(text_features)
             return seg_output, img_global, text_global, pixel_feat
         else:
             return seg_output, None, None, None
