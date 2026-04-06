@@ -158,6 +158,8 @@ def train_epoch(
                 distance_map=distance_map,
                 epoch=epoch,
                 total_epochs=total_epochs,
+                text_ids=text_ids if use_text else None,
+                tokenizer=getattr(loader.dataset, 'tokenizer', None),
             )['total']
             loss = loss / grad_accum  # 梯度累积：损失除以累积步数
 
@@ -520,6 +522,7 @@ def main():
         hierarchy_weight=hierarchy_weight,
         # V9.0: Text-image alignment loss
         alignment_weight=config['loss'].get('alignment_weight', 0.0),
+        text_supervision_weight=config['loss'].get('text_supervision_weight', 0.0),
     ).to(device)
 
     # Manual LR schedule config (warmup + cosine decay)

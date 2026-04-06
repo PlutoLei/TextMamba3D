@@ -7,6 +7,7 @@ from .focal_tversky_loss import FocalTverskyLoss
 from .edge_loss import EdgeLoss
 from .contrastive_loss import ContrastiveLoss, ForegroundContrastiveLoss
 from .alignment_loss import InfoNCELoss
+from .text_supervision import TextSegConsistencyLoss
 
 
 class CombinedLoss(nn.Module):
@@ -36,6 +37,8 @@ class CombinedLoss(nn.Module):
         ftl_gamma: float = 1.33,
         # V9.0: Text-image alignment loss
         alignment_weight: float = 0.0,
+        # V10.1: Text supervision loss weight
+        text_supervision_weight: float = 0.0,
         # V7.0: Boundary + Hierarchy Loss
         use_boundary: bool = False,
         boundary_max_weight: float = 1.0,
@@ -74,6 +77,10 @@ class CombinedLoss(nn.Module):
         else:
             self.ce_class_weights = None
 
+        # V10.1: Text supervision loss (R-Super inspired)
+        self.text_supervision = TextSegConsistencyLoss()
+        self.text_supervision_weight = text_supervision_weight
+
         # V7.0: Boundary + Hierarchy Loss
         self.use_boundary = use_boundary
         self.boundary_max_weight = boundary_max_weight
@@ -104,6 +111,8 @@ class CombinedLoss(nn.Module):
         distance_map: torch.Tensor | None = None,
         epoch: int = 0,
         total_epochs: int = 80,
+        text_ids: torch.Tensor | None = None,
+        tokenizer=None,
     ) -> dict[str, torch.Tensor]:
         losses = {}
 
@@ -176,6 +185,12 @@ class CombinedLoss(nn.Module):
             hl = self.hierarchy_loss(pred.float())
             losses['hierarchy'] = hl * self.hierarchy_weight
             total = total + losses['hierarchy']
+
+        # V10.1: Text supervision loss (text as spatial constraint, not input)
+        if self.text_supervision_weight > 0 and text_ids is not None:
+            ts_loss = self.text_supervision(pred, text_ids, tokenizer)
+            losses['text_supervision'] = ts_loss.item()
+            total = total + self.text_supervision_weight * ts_loss
 
         # Clamp finite values only — NaN/Inf pass through for training loop detection
         losses['total'] = total.clamp(0.0, 20.0) if total.isfinite() else total
