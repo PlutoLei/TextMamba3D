@@ -679,7 +679,9 @@ def main():
                 'best_dice_no_text': best_dice_no_text,
                 'scaler': scaler.state_dict() if scaler is not None else None,
             }
-            torch.save(state, path)
+            tmp_path = path + '.tmp'
+            torch.save(state, tmp_path)
+            os.replace(tmp_path, path)
 
         if val_dice_no_text > best_dice_no_text:
             best_dice_no_text = val_dice_no_text
