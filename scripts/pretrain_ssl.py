@@ -29,7 +29,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.encoder_3d import MambaEncoder3D
-from data.brats_dataset import BraTS2021Dataset
+from data.brats_dataset import BraTSDataset
+from data import get_train_transforms, get_val_transforms
 
 
 class MIMDecoder(nn.Module):
@@ -115,12 +116,15 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Device: {device}')
 
-    # Dataset (images only, no labels needed for SSL)
-    dataset = BraTS2021Dataset(
+    # Dataset with transforms for patch cropping
+    train_transform = get_train_transforms((128, 128, 128))
+    val_transform = get_val_transforms((128, 128, 128))
+
+    dataset = BraTSDataset(
         data_dir=args.data_dir,
         split='train',
-        patch_size=(128, 128, 128),
-        text_max_len=1,  # dummy, not used
+        transform=train_transform,
+        max_text_len=1,  # dummy, not used
     )
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,
@@ -128,12 +132,11 @@ def main():
     )
     print(f'Training samples: {len(dataset)}')
 
-    # Val dataset
-    val_dataset = BraTS2021Dataset(
+    val_dataset = BraTSDataset(
         data_dir=args.data_dir,
         split='val',
-        patch_size=(128, 128, 128),
-        text_max_len=1,
+        transform=val_transform,
+        max_text_len=1,
     )
     val_loader = DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
