@@ -111,6 +111,9 @@ def main():
     parser.add_argument('--embed-dim', type=int, default=48)
     parser.add_argument('--save-dir', type=str, default='checkpoints')
     parser.add_argument('--resume', type=str, default=None)
+    parser.add_argument('--dataset', type=str, default='brats',
+                        choices=['brats', 'ixi'],
+                        help='Dataset for SSL pretraining')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -120,24 +123,30 @@ def main():
     train_transform = get_train_transforms((128, 128, 128))
     val_transform = get_val_transforms((128, 128, 128))
 
-    dataset = BraTSDataset(
-        data_dir=args.data_dir,
-        split='train',
-        transform=train_transform,
-        max_text_len=1,  # dummy, not used
-    )
+    if args.dataset == 'ixi':
+        from data.ixi_dataset import IXIDataset
+        dataset = IXIDataset(args.data_dir, split='train', transform=train_transform)
+        val_dataset = IXIDataset(args.data_dir, split='val', transform=val_transform)
+    else:
+        dataset = BraTSDataset(
+            data_dir=args.data_dir,
+            split='train',
+            transform=train_transform,
+            max_text_len=1,  # dummy, not used
+        )
+        val_dataset = BraTSDataset(
+            data_dir=args.data_dir,
+            split='val',
+            transform=val_transform,
+            max_text_len=1,
+        )
+
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,
         num_workers=4, pin_memory=True, drop_last=True,
     )
     print(f'Training samples: {len(dataset)}')
 
-    val_dataset = BraTSDataset(
-        data_dir=args.data_dir,
-        split='val',
-        transform=val_transform,
-        max_text_len=1,
-    )
     val_loader = DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=4, pin_memory=True,
