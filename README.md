@@ -550,3 +550,7 @@ This project builds on the following works:
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
+
+---
+
+*by [Lei Yuxuan](https://plutolei.github.io) ([@PlutoLei](https://github.com/PlutoLei))*
